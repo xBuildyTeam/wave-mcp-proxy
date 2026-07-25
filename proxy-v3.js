@@ -1,25 +1,8 @@
 /**
- * Wave Compute MCP Proxy v3 — Pure stdio forwarder
- * 
- * Responsibilities:
- * 1. Handle MCP initialize locally (never forward)
- * 2. Forward tools/list and tools/call to cloud mcpRouter
- * 
- * Zero secrets. Zero ports. Zero network servers.
- * Cursor manages this process via stdio — do NOT run manually.
- * 
- * mcp.json:
- * {
- *   "mcpServers": {
- *     "wave-compute": {
- *       "command": "node",
- *       "args": ["C:\\Users\\Eddie\\wave-mcp-proxy\\proxy-v3.js"],
- *       "env": {
- *         "MCP_BACKEND_URL": "https://app.base44.com/api/apps/6a6442fdfedd7c7980f4f40b/functions/mcpRouter"
- *       }
- *     }
- *   }
- * }
+ * Wave Compute MCP Proxy v3 — Pure stdio forwarder with eager tool cache
+ *
+ * Handles initialize locally. Pre-fetches tool list on startup so Cursor
+ * never races against a cold backend fetch.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -30,86 +13,82 @@ import {
   InitializeRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-// ── Config ──
-const MCP_BACKEND_URL = process.env.MCP_BACKEND_URL || "https://app.base44.com/api/apps/6a6442fdfedd7c7980f4f40b/functions/mcpRouter";
+const MCP_BACKEND_URL = process.env.MCP_BACKEND_URL ||
+  "https://app.base44.com/api/apps/6a6442fdfedd7c7980f4f40b/functions/mcpRouter";
 
-// ── Forward JSON-RPC to cloud mcpRouter ──
-async function forwardToRouter(payload) {
+// ── Eager tool cache — populated before stdio opens ──
+let cachedTools = [];
+
+async function fetchTools() {
   try {
     const resp = await fetch(MCP_BACKEND_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ jsonrpc: "2.0", id: "startup", method: "tools/list", params: {} }),
     });
-
-    if (!resp.ok) {
-      throw new Error("mcpRouter HTTP " + resp.status);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data && data.result && Array.isArray(data.result.tools)) {
+      cachedTools = data.result.tools;
     }
+  } catch (_) {
+    // silently ignore — will return empty list
+  }
+}
 
-    return await resp.json();
+// ── Forward a tools/call to backend ──
+async function forwardCall(name, args, reqId) {
+  try {
+    const resp = await fetch(MCP_BACKEND_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: reqId || "call-1",
+        method: "tools/call",
+        params: { name, arguments: args || {} },
+      }),
+    });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+    if (data && data.result) return data.result;
+    throw new Error("No result in response");
   } catch (err) {
     return {
-      jsonrpc: "2.0",
-      id: payload.id,
-      result: {
-        content: [{ type: "text", text: "Wave Compute error: " + err.message }],
-        isError: true,
-      },
+      content: [{ type: "text", text: "Wave Compute error: " + err.message }],
+      isError: true,
     };
   }
 }
 
 // ── MCP Server ──
 const server = new Server(
-  { name: "wave-compute", version: "3.0.0" },
+  { name: "wave-compute", version: "3.1.0" },
   { capabilities: { tools: {} } }
 );
 
-// Handle initialize locally — never forward to backend
 server.setRequestHandler(InitializeRequestSchema, async (request) => {
   return {
     protocolVersion: request.params.protocolVersion || "2024-11-05",
     capabilities: { tools: {} },
-    serverInfo: { name: "wave-compute", version: "3.0.0" },
+    serverInfo: { name: "wave-compute", version: "3.1.0" },
   };
 });
 
-// Forward tools/list to mcpRouter
-server.setRequestHandler(ListToolsRequestSchema, async (request) => {
-  const result = await forwardToRouter({
-    jsonrpc: "2.0",
-    id: request.id || "list-1",
-    method: "tools/list",
-    params: {},
-  });
-
-  if (result && result.result && result.result.tools) {
-    return { tools: result.result.tools };
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  // If cache is empty, try one more fetch (fallback for slow starts)
+  if (cachedTools.length === 0) {
+    await fetchTools();
   }
-  return { tools: [] };
+  return { tools: cachedTools };
 });
 
-// Forward tools/call to mcpRouter
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-
-  const result = await forwardToRouter({
-    jsonrpc: "2.0",
-    id: request.id || "call-1",
-    method: "tools/call",
-    params: { name, arguments: args || {} },
-  });
-
-  if (result && result.result) {
-    return result.result;
-  }
-
-  return {
-    content: [{ type: "text", text: "No response from mcpRouter" }],
-    isError: true,
-  };
+  return await forwardCall(name, args, request.id);
 });
 
-// ── Start stdio transport ──
+// ── Startup: pre-fetch tools THEN open stdio ──
+await fetchTools();
 const transport = new StdioServerTransport();
 await server.connect(transport);
