@@ -1,0 +1,13 @@
+{
+  "name": "wave-mcp-proxy",
+  "version": "3.0.0",
+  "type": "module",
+  "description": "Wave Compute MCP Proxy for Cursor",
+  "main": "proxy-v3.js",
+  "scripts": {
+    "start": "node proxy-v3.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
