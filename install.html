@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wave Compute MCP — Add to Cursor</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0a0a14;
+    color: #e0e0e8;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .container { max-width: 560px; padding: 48px 24px; text-align: center; }
+  .logo {
+    font-size: 28px; font-weight: 700; margin-bottom: 8px;
+    background: linear-gradient(135deg, #00e5c0, #9b4dff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .tagline { color: #888; font-size: 14px; margin-bottom: 40px; }
+  .card {
+    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px; padding: 32px; backdrop-filter: blur(10px);
+  }
+  .label { font-size: 13px; color: #888; margin-bottom: 8px; text-align: left; }
+  input {
+    width: 100%; padding: 14px 16px; font-size: 14px;
+    background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px; color: #fff; margin-bottom: 20px;
+    transition: border 0.2s;
+  }
+  input:focus { outline: none; border-color: #00e5c0; }
+  input::placeholder { color: #555; }
+  .btn {
+    width: 100%; padding: 16px; font-size: 16px; font-weight: 600;
+    border: none; border-radius: 12px; cursor: pointer; transition: all 0.2s;
+    background: linear-gradient(135deg, #00e5c0, #00b894);
+    color: #0a0a14;
+  }
+  .btn:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0,229,192,0.3); }
+  .btn:active { transform: translateY(0); }
+  .btn-secondary {
+    background: rgba(255,255,255,0.06); color: #ccc; margin-top: 12px;
+    font-size: 14px; padding: 12px;
+  }
+  .btn-secondary:hover { background: rgba(255,255,255,0.1); }
+  .copy-box {
+    background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px; padding: 16px; margin-top: 24px; text-align: left;
+    font-family: 'SF Mono', Monaco, monospace; font-size: 12px; color: #00e5c0;
+    word-break: break-all; max-height: 200px; overflow-y: auto; display: none;
+  }
+  .steps { margin-top: 32px; text-align: left; }
+  .step { display: flex; gap: 12px; margin-bottom: 16px; align-items: start; }
+  .step-num {
+    width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+    background: rgba(0,229,192,0.15); color: #00e5c0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700;
+  }
+  .step-text { font-size: 14px; color: #aaa; line-height: 1.5; padding-top: 5px; }
+  .step-text code {
+    background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px;
+    font-size: 12px; color: #00e5c0;
+  }
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 600; padding: 4px 10px;
+    border-radius: 20px; background: rgba(0,229,192,0.15); color: #00e5c0;
+    margin-bottom: 24px;
+  }
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #00e5c0; color: #0a0a14; padding: 12px 24px;
+    border-radius: 10px; font-weight: 600; font-size: 14px;
+    opacity: 0; transition: opacity 0.3s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">⚡ Wave Compute MCP</div>
+    <div class="tagline">Base44 backend + Theta GPU compute — inside Cursor</div>
+    <span class="badge">28 tools · 0 config</span>
+
+    <div class="card">
+      <div class="label">Wave OS API Token</div>
+      <input type="password" id="token" placeholder="wos_..." autocomplete="off" />
+      <button class="btn" onclick="generate()">Add to Cursor</button>
+      <button class="btn btn-secondary" onclick="copyConfig()">Copy mcp.json config</button>
+      <div class="copy-box" id="copyBox"></div>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-text">Get your API token at <code>oswave.io → Settings → Developer</code></div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-text">Paste it above and click <strong>Add to Cursor</strong> — Cursor opens with the MCP pre-configured</div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-text">Check the MCP panel for a green dot. You're live with 28 tools.</div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-text">Or run the CLI: <code>npx wave-mcp-setup</code></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">Copied!</div>
+
+  <script>
+    function getConfig() {
+      const token = document.getElementById('token').value.trim();
+      if (!token) { alert('Paste your Wave API token first'); return null; }
+      const t = token.startsWith('Bearer ') ? token.slice(7) : token;
+      return {
+        mcpServers: {
+          "wave-compute": {
+            url: "https://oswave.io/api/functions/mcpRouter",
+            type: "http",
+            headers: { Authorization: "Bearer " + t }
+          }
+        }
+      };
+    }
+
+    function generate() {
+      const config = getConfig();
+      if (!config) return;
+      // Cursor deep link protocol for MCP install
+      const token = document.getElementById('token').value.trim();
+      const t = token.startsWith('Bearer ') ? token.slice(7) : token;
+      const deepLink = `cursor://mcp/install?name=wave-compute&url=${encodeURIComponent('https://oswave.io/api/functions/mcpRouter')}&type=http&headers=${encodeURIComponent(JSON.stringify({"Authorization":"Bearer "+t}))}`;
+      window.location.href = deepLink;
+      // Fallback: also copy to clipboard
+      setTimeout(() => copyConfig(), 1000);
+    }
+
+    function copyConfig() {
+      const config = getConfig();
+      if (!config) return;
+      const text = JSON.stringify(config, null, 2);
+      navigator.clipboard.writeText(text).then(() => {
+        const box = document.getElementById('copyBox');
+        box.textContent = text;
+        box.style.display = 'block';
+        showToast('Config copied! Paste into Cursor MCP settings');
+      });
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 3000);
+    }
+  </script>
+</body>
+</html>
