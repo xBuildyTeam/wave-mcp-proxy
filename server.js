@@ -1,5 +1,5 @@
 /**
- * Wave Compute MCP — Railway SSE Bridge v4.3.0
+ * Wave Compute MCP — Railway SSE Bridge v4.3.1
  * Supports both StreamableHTTP (POST /sse) and legacy SSE (GET /sse)
  */
 

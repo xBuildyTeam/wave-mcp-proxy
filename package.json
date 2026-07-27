@@ -1,6 +1,6 @@
 {
   "name": "wave-mcp-proxy",
-  "version": "4.3.0",
+  "version": "4.3.1",
   "type": "module",
   "description": "Wave Compute MCP SSE Bridge for Cursor",
   "main": "server.js",
