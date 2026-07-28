@@ -66,7 +66,6 @@
       margin-left: 6px;
       vertical-align: middle;
     }
-    .tag-private { background: rgba(239, 68, 68, 0.2); color: #f87171; }
     .tag-recommended { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
     .tag-new { background: rgba(168, 85, 247, 0.2); color: #c084fc; }
     .panel {
@@ -268,9 +267,6 @@
       <button class="tab" onclick="switchTab('direct')">
         ⚡ Direct HTTP
       </button>
-      <button class="tab" onclick="switchTab('private')">
-        🔒 Private SSE <span class="tag tag-private">Eddie only</span>
-      </button>
     </div>
 
     <!-- TAB 1: Personal SSE (Multi-user Railway) -->
@@ -321,32 +317,6 @@
       </div>
     </div>
 
-    <!-- TAB 3: Private SSE (Eddie only) -->
-    <div id="panel-private" class="panel">
-      <h2>Private SSE — Eddie's Demo Instance</h2>
-      <p class="desc">Shared instance with Eddie's API token baked in. For presentations and personal use only. All compute runs on Eddie's account.</p>
-
-      <div class="notice">
-        ⚠️ This uses a shared token — all compute is billed to Eddie's Wave OS account. For your own usage, use the Personal SSE tab above.
-      </div>
-
-      <div class="config-box">
-        <button class="copy-btn" onclick="copyConfig('privateConfig')">Copy</button>
-        <pre id="privateConfig">{
-  "mcpServers": {
-    "wave-compute": {
-      "url": "https://wave-mcp.up.railway.app/sse"
-    }
-  }
-}</pre>
-      </div>
-
-      <div class="btn-row">
-        <button class="btn btn-primary" onclick="copyConfig('privateConfig')">Copy mcp.json</button>
-        <button class="btn btn-secondary" onclick="addDirect('private')">Add to Cursor</button>
-      </div>
-    </div>
-
     <div class="steps">
       <h3>Setup Steps</h3>
       <ol>
@@ -363,7 +333,6 @@
 
   <script>
     const RAILWAY_PUBLIC_URL = "https://wave-mcp-proxy-production.up.railway.app";
-    const RAILWAY_PRIVATE_URL = "https://wave-mcp.up.railway.app";
     const DIRECT_URL = "https://app.oswave.io/api/functions/mcpRouter";
 
     function switchTab(name) {
@@ -443,10 +412,6 @@
         url = "cursor://anysphere.cursor-deeplink/mcp/install?name=wave-compute&url=" +
               encodeURIComponent(DIRECT_URL) +
               "&headers=" + encodeURIComponent(JSON.stringify({"Authorization": "Bearer " + token}));
-      } else {
-        url = "cursor://anysphere.cursor-deeplink/mcp/install?name=wave-compute&url=" +
-              encodeURIComponent(RAILWAY_PRIVATE_URL + "/sse");
-      }
       window.location.href = url;
     }
   </script>
