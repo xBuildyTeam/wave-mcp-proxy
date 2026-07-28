@@ -15,7 +15,7 @@
     align-items: center;
     justify-content: center;
   }
-  .container { max-width: 560px; padding: 48px 24px; text-align: center; }
+  .container { max-width: 580px; padding: 48px 24px; text-align: center; }
   .logo {
     font-size: 28px; font-weight: 700; margin-bottom: 8px;
     background: linear-gradient(135deg, #00e5c0, #9b4dff);
@@ -26,7 +26,28 @@
     background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
     border-radius: 16px; padding: 32px; backdrop-filter: blur(10px);
   }
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 600; padding: 4px 10px;
+    border-radius: 20px; background: rgba(0,229,192,0.15); color: #00e5c0;
+    margin-bottom: 24px;
+  }
+  .tabs {
+    display: flex; gap: 8px; margin-bottom: 24px;
+  }
+  .tab {
+    flex: 1; padding: 12px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+    border-radius: 10px; border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.02); color: #888;
+    transition: all 0.2s;
+  }
+  .tab:hover { background: rgba(255,255,255,0.05); color: #ccc; }
+  .tab.active {
+    background: rgba(0,229,192,0.1); border-color: rgba(0,229,192,0.3); color: #00e5c0;
+  }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
   .label { font-size: 13px; color: #888; margin-bottom: 8px; text-align: left; }
+  .hint { font-size: 12px; color: #555; margin-bottom: 16px; text-align: left; }
   input {
     width: 100%; padding: 14px 16px; font-size: 14px;
     background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1);
@@ -52,7 +73,8 @@
     background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08);
     border-radius: 10px; padding: 16px; margin-top: 24px; text-align: left;
     font-family: 'SF Mono', Monaco, monospace; font-size: 12px; color: #00e5c0;
-    word-break: break-all; max-height: 200px; overflow-y: auto; display: none;
+    word-break: break-all; max-height: 280px; overflow-y: auto; display: none;
+    white-space: pre-wrap;
   }
   .steps { margin-top: 32px; text-align: left; }
   .step { display: flex; gap: 12px; margin-bottom: 16px; align-items: start; }
@@ -67,11 +89,12 @@
     background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px;
     font-size: 12px; color: #00e5c0;
   }
-  .badge {
-    display: inline-block; font-size: 11px; font-weight: 600; padding: 4px 10px;
-    border-radius: 20px; background: rgba(0,229,192,0.15); color: #00e5c0;
-    margin-bottom: 24px;
+  .info-box {
+    background: rgba(155, 77, 255, 0.06); border: 1px solid rgba(155, 77, 255, 0.15);
+    border-radius: 10px; padding: 14px; margin-bottom: 20px; text-align: left;
+    font-size: 12px; color: #b8a0d8; line-height: 1.5;
   }
+  .info-box strong { color: #9b4dff; }
   .toast {
     position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
     background: #00e5c0; color: #0a0a14; padding: 12px 24px;
@@ -79,6 +102,9 @@
     opacity: 0; transition: opacity 0.3s; pointer-events: none;
   }
   .toast.show { opacity: 1; }
+  .no-token-note {
+    font-size: 12px; color: #00e5c0; margin-bottom: 16px;
+  }
 </style>
 </head>
 <body>
@@ -88,25 +114,49 @@
     <span class="badge">28 tools · 0 config</span>
 
     <div class="card">
-      <div class="label">Wave OS API Token</div>
-      <input type="password" id="token" placeholder="wos_..." autocomplete="off" />
-      <button class="btn" onclick="generate()">Add to Cursor</button>
-      <button class="btn btn-secondary" onclick="copyConfig()">Copy mcp.json config</button>
-      <div class="copy-box" id="copyBox"></div>
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('railway')">🚂 Railway SSE</div>
+        <div class="tab" onclick="switchTab('direct')">⚡ Direct HTTP</div>
+      </div>
+
+      <!-- Railway SSE (Recommended — no token needed) -->
+      <div class="tab-content active" id="tab-railway">
+        <div class="info-box">
+          <strong>Recommended:</strong> Uses our Railway SSE proxy with built-in auth.
+          No token required, no 25-second timeout. Works instantly.
+        </div>
+        <button class="btn" onclick="copyRailway()">Copy mcp.json config</button>
+        <button class="btn btn-secondary" onclick="deepLinkRailway()">Add to Cursor directly</button>
+        <div class="copy-box" id="copyBoxRailway"></div>
+      </div>
+
+      <!-- Direct HTTP (Advanced — requires token) -->
+      <div class="tab-content" id="tab-direct">
+        <div class="info-box">
+          <strong>Advanced:</strong> Direct HTTP to app.oswave.io — lower latency but
+          subject to Base44's 25-second function timeout. Requires your API token.
+        </div>
+        <div class="label">Wave OS API Token</div>
+        <input type="password" id="token" placeholder="wos_..." autocomplete="off" />
+        <div class="hint">Get yours at app.oswave.io → Settings → Developer</div>
+        <button class="btn" onclick="copyDirect()">Copy mcp.json config</button>
+        <button class="btn btn-secondary" onclick="deepLinkDirect()">Add to Cursor directly</button>
+        <div class="copy-box" id="copyBoxDirect"></div>
+      </div>
     </div>
 
     <div class="steps">
       <div class="step">
         <div class="step-num">1</div>
-        <div class="step-text">Get your API token at <code>oswave.io → Settings → Developer</code></div>
+        <div class="step-text">Choose your connection method above — <strong>Railway SSE</strong> is recommended (no token needed)</div>
       </div>
       <div class="step">
         <div class="step-num">2</div>
-        <div class="step-text">Paste it above and click <strong>Add to Cursor</strong> — Cursor opens with the MCP pre-configured</div>
+        <div class="step-text">Copy the config and paste into <code>~/.cursor/mcp.json</code> or click <strong>Add to Cursor</strong></div>
       </div>
       <div class="step">
         <div class="step-num">3</div>
-        <div class="step-text">Check the MCP panel for a green dot. You're live with 28 tools.</div>
+        <div class="step-text">Restart Cursor. Check the MCP panel for a green dot — you're live with 28 tools</div>
       </div>
       <div class="step">
         <div class="step-num">4</div>
@@ -118,14 +168,67 @@
   <div class="toast" id="toast">Copied!</div>
 
   <script>
-    function getConfig() {
+    // ── Tab switching ──
+    function switchTab(tab) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      if (tab === 'railway') {
+        document.querySelectorAll('.tab')[0].classList.add('active');
+        document.getElementById('tab-railway').classList.add('active');
+      } else {
+        document.querySelectorAll('.tab')[1].classList.add('active');
+        document.getElementById('tab-direct').classList.add('active');
+      }
+    }
+
+    // ── Railway SSE config (recommended) ──
+    function getRailwayConfig() {
+      return {
+        mcpServers: {
+          "base44": {
+            url: "https://app.base44.com/mcp",
+            type: "http"
+          },
+          "wave-compute": {
+            url: "https://wave-mcp.up.railway.app/sse",
+            type: "sse"
+          }
+        }
+      };
+    }
+
+    function copyRailway() {
+      const config = getRailwayConfig();
+      const text = JSON.stringify(config, null, 2);
+      navigator.clipboard.writeText(text).then(() => {
+        const box = document.getElementById('copyBoxRailway');
+        box.textContent = text;
+        box.style.display = 'block';
+        showToast('Config copied! Paste into Cursor MCP settings');
+      });
+    }
+
+    function deepLinkRailway() {
+      const config = getRailwayConfig();
+      // Cursor deep link for the wave-compute server
+      const deepLink = `cursor://mcp/install?name=wave-compute&url=${encodeURIComponent('https://wave-mcp.up.railway.app/sse')}&type=sse`;
+      window.location.href = deepLink;
+      setTimeout(() => copyRailway(), 1000);
+    }
+
+    // ── Direct HTTP config (advanced) ──
+    function getDirectConfig() {
       const token = document.getElementById('token').value.trim();
-      if (!token) { alert('Paste your Wave API token first'); return null; }
+      if (!token) { alert('Paste your Wave OS API token first'); return null; }
       const t = token.startsWith('Bearer ') ? token.slice(7) : token;
       return {
         mcpServers: {
+          "base44": {
+            url: "https://app.base44.com/mcp",
+            type: "http"
+          },
           "wave-compute": {
-            url: "https://oswave.io/api/functions/mcpRouter",
+            url: "https://app.oswave.io/api/functions/mcpRouter",
             type: "http",
             headers: { Authorization: "Bearer " + t }
           }
@@ -133,30 +236,28 @@
       };
     }
 
-    function generate() {
-      const config = getConfig();
-      if (!config) return;
-      // Cursor deep link protocol for MCP install
-      const token = document.getElementById('token').value.trim();
-      const t = token.startsWith('Bearer ') ? token.slice(7) : token;
-      const deepLink = `cursor://mcp/install?name=wave-compute&url=${encodeURIComponent('https://oswave.io/api/functions/mcpRouter')}&type=http&headers=${encodeURIComponent(JSON.stringify({"Authorization":"Bearer "+t}))}`;
-      window.location.href = deepLink;
-      // Fallback: also copy to clipboard
-      setTimeout(() => copyConfig(), 1000);
-    }
-
-    function copyConfig() {
-      const config = getConfig();
+    function copyDirect() {
+      const config = getDirectConfig();
       if (!config) return;
       const text = JSON.stringify(config, null, 2);
       navigator.clipboard.writeText(text).then(() => {
-        const box = document.getElementById('copyBox');
+        const box = document.getElementById('copyBoxDirect');
         box.textContent = text;
         box.style.display = 'block';
         showToast('Config copied! Paste into Cursor MCP settings');
       });
     }
 
+    function deepLinkDirect() {
+      const token = document.getElementById('token').value.trim();
+      if (!token) { alert('Paste your Wave OS API token first'); return; }
+      const t = token.startsWith('Bearer ') ? token.slice(7) : token;
+      const deepLink = `cursor://mcp/install?name=wave-compute&url=${encodeURIComponent('https://app.oswave.io/api/functions/mcpRouter')}&type=http&headers=${encodeURIComponent(JSON.stringify({"Authorization":"Bearer "+t}))}`;
+      window.location.href = deepLink;
+      setTimeout(() => copyDirect(), 1000);
+    }
+
+    // ── Toast ──
     function showToast(msg) {
       const toast = document.getElementById('toast');
       toast.textContent = msg;
