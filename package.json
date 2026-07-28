@@ -1,17 +1,1 @@
-{
-  "name": "wave-mcp-proxy",
-  "version": "5.0.0",
-  "description": "Multi-user MCP SSE bridge for Wave OS",
-  "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "express": "^4.21.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "license": "MIT"
-}
+{"name":"wave-mcp-proxy","version":"5.2.0","type":"module","description":"Multi-user MCP SSE bridge for Wave OS — per-user JWT auth via Railway","main":"server-v5.js","scripts":{"start":"node server-v5.js"},"dependencies":{"express":"^4.21.0","@modelcontextprotocol/sdk":"^1.29.0"},"engines":{"node":">=18.0.0"},"license":"MIT"}
