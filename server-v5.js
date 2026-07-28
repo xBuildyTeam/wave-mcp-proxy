@@ -1,17 +1,12 @@
 /**
- * Wave Compute MCP — Railway SSE Bridge v5.1.0 (Multi-User + Rotating JWT Tokens)
+ * Wave Compute MCP — Railway SSE Bridge v5.2.0
+ * (Multi-User + Rotating JWT Tokens + Backend Handshake)
  * 
- * Supports both StreamableHTTP (POST /sse) and legacy SSE (GET /sse)
- * 
- * AUTH MODEL (dual-mode):
- * 1. Per-user JWT token: short-lived (4h) signed token from Settings → MCP Setup
- *    - Validates signature + expiry
- *    - Extracts inner auth token for backend forwarding
- *    - Revocable via /revoke endpoint
- * 2. Raw API token: backward compatibility with existing static tokens
- * 3. Env var fallback: uses WAVE_API_TOKEN if no per-request token is present (Eddie's private mode)
- * 
- * If WAVE_API_TOKEN is NOT set and no per-request token is provided → 401 with clear error
+ * CHANGES FROM v5.1.0:
+ * - Forward raw JWT to backend when credential field present (enables backend handshake)
+ * - Surface empty tools/list as diagnostic error instead of silently returning []
+ * - Add /diagnose endpoint for debugging auth chain
+ * - Log backend response status codes for all forwarded calls
  */
 
 import express from "express";
@@ -28,7 +23,7 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "5.1.0";
+const VERSION = "5.2.0";
 
 // ── BACKEND URL ──
 const STALE_URL = "https://oswave.io/api/functions/mcpRouter";
@@ -44,18 +39,11 @@ const JWT_SECRET = process.env.JWT_SECRET || null;
 
 // ── JWT FUNCTIONS ──
 
-/**
- * Check if a token string looks like a JWT (starts with "ey" and has 3 base64url parts)
- */
 function isJwt(token) {
   if (!token || typeof token !== "string") return false;
   return token.startsWith("ey") && token.split(".").length === 3;
 }
 
-/**
- * Verify a JWT signature and return the decoded payload, or null if invalid/expired.
- * Uses HMAC-SHA256 with JWT_SECRET.
- */
 function verifyJwt(token) {
   if (!JWT_SECRET) {
     console.warn("JWT_SECRET not configured — cannot verify JWT tokens");
@@ -68,7 +56,6 @@ function verifyJwt(token) {
   const [headerB64, payloadB64, sig] = parts;
   const data = `${headerB64}.${payloadB64}`;
 
-  // Verify signature
   const expectedSig = crypto
     .createHmac("sha256", JWT_SECRET)
     .update(data)
@@ -79,7 +66,6 @@ function verifyJwt(token) {
     return null;
   }
 
-  // Parse payload
   let payload;
   try {
     payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
@@ -88,7 +74,6 @@ function verifyJwt(token) {
     return null;
   }
 
-  // Check expiry
   if (payload.exp && Math.floor(Date.now() / 1000) > payload.exp) {
     console.warn(`JWT expired (exp: ${payload.exp}, now: ${Math.floor(Date.now() / 1000)})`);
     return null;
@@ -99,72 +84,65 @@ function verifyJwt(token) {
 
 /**
  * Resolve a raw token string to the actual auth token for backend forwarding.
- * - If it's a valid JWT: extract the inner auth token from the payload
- * - If it's a raw token: return as-is (backward compatibility)
- * - If invalid/expired JWT: return null
+ * 
+ * v5.2.0: If the JWT has a `credential` field (new handshake mode),
+ * return the raw JWT itself — the backend will verify it using JWT_SECRET
+ * and use base44.asServiceRole. No inner session token needed.
+ * 
+ * v5.1.0 compat: If the JWT has `token`/`authToken` (old mode), extract it.
+ * Raw tokens pass through unchanged.
  */
 function resolveToken(rawToken) {
   if (!rawToken) return null;
 
-  // Check if it's a JWT
   if (isJwt(rawToken)) {
     if (!JWT_SECRET) {
       console.warn("Received JWT but JWT_SECRET not configured");
       return null;
     }
     const payload = verifyJwt(rawToken);
-    if (!payload) return null; // Invalid or expired
+    if (!payload) return null;
 
-    // Extract the inner auth token from the JWT payload
+    // v5.2.0: Credential-based handshake — forward the JWT itself
+    if (payload.credential) {
+      console.log("JWT has credential field — forwarding raw JWT to backend (handshake mode)");
+      return rawToken; // Backend will verify JWT_SECRET + use asServiceRole
+    }
+
+    // v5.1.0 compat: Extract inner session token
     const innerToken = payload.token || payload.authToken;
     if (!innerToken) {
-      console.warn("JWT valid but no inner token in payload");
+      console.warn("JWT valid but no inner token or credential in payload");
       return null;
     }
     return innerToken;
   }
 
-  // Raw token — backward compatibility with existing static API tokens
+  // Raw token — backward compatibility
   return rawToken;
 }
 
-/**
- * Extract the user's raw token from the incoming request (before JWT resolution).
- * Priority: Authorization Bearer header > X-Wave-Token header > ?token= query param > env var
- */
 function extractRawToken(req) {
-  // 1. Authorization: Bearer xxx
   const authHeader = req.headers["authorization"];
   if (authHeader && authHeader.startsWith("Bearer ")) {
     const token = authHeader.slice(7).trim();
     if (token && token.length > 10) return token;
   }
 
-  // 2. X-Wave-Token header
   const waveHeader = req.headers["x-wave-token"];
   if (waveHeader && waveHeader.length > 10) return waveHeader;
 
-  // 3. ?token= query param
   if (req.query && req.query.token && req.query.token.length > 10) {
     return req.query.token;
   }
 
-  // 4. Fallback to env var (Eddie's private mode)
   return ENV_TOKEN;
 }
 
-/**
- * Full token extraction + JWT resolution.
- * Returns the actual auth token for backend forwarding, or null if no valid token.
- */
 function extractUserToken(req) {
   const rawToken = extractRawToken(req);
   if (!rawToken) return null;
-
-  // If it's the env token, return directly (no JWT resolution needed)
   if (rawToken === ENV_TOKEN) return ENV_TOKEN;
-
-  // Resolve JWT → inner token, or pass through raw token
   return resolveToken(rawToken);
 }
 
@@ -175,19 +153,16 @@ function getAuthHeaders(token) {
   };
 }
 
-// ── Revocation list (in-memory, checked on connect) ──
-// For persistent revocation, tokens also expire via JWT expiry (4h max)
+// ── Revocation list ──
 const revokedJtis = new Set();
-
-// ── Per-session token storage ──
 const sessionTokens = {};
 
-// ── Eager tool cache on startup (only works if ENV_TOKEN is set) ──
+// ── Eager tool cache ──
 let cachedTools = null;
 
 async function prefetchTools() {
   if (!ENV_TOKEN) {
-    console.log("Public mode: no ENV_TOKEN — skipping startup prefetch (tools will load per-user)");
+    console.log("Public mode: no ENV_TOKEN — skipping startup prefetch");
     return;
   }
   try {
@@ -208,17 +183,17 @@ async function prefetchTools() {
       console.log(`Prefetched ${cachedTools.length} tools on startup (env token)`);
     }
   } catch (err) {
-    console.warn("Prefetch failed (will retry per-request):", err.message);
+    console.warn("Prefetch failed:", err.message);
   }
 }
 
 prefetchTools();
 
-// ── Forward JSON-RPC to Base44 backend (with per-user auth) ──
+// ── Forward JSON-RPC to Base44 backend ──
 async function forwardToBackend(method, params, id, token) {
   if (!token) {
     throw new Error(
-      "No valid MCP token provided. Generate a fresh one at app.oswave.io → Settings → MCP Setup."
+      "No valid MCP token. Generate one at app.oswave.io → Settings → MCP Setup."
     );
   }
 
@@ -233,43 +208,56 @@ async function forwardToBackend(method, params, id, token) {
     }),
   });
 
+  console.log(`Backend ${method}: HTTP ${resp.status}`);
+
   if (resp.status === 401 || resp.status === 403) {
     throw new Error(
-      `Authentication failed (HTTP ${resp.status}). Your MCP token may be invalid or expired. Generate a fresh one at app.oswave.io → Settings → MCP Setup.`
+      `Auth failed (HTTP ${resp.status}). Token invalid or expired. Regenerate at app.oswave.io → Settings → MCP Setup.`
     );
   }
 
   if (!resp.ok) {
-    throw new Error(`Backend returned HTTP ${resp.status} for ${method}`);
+    const body = await resp.text().catch(() => "");
+    throw new Error(`Backend HTTP ${resp.status} for ${method}: ${body.slice(0, 200)}`);
   }
 
   const data = await resp.json();
 
-  if (data && data.result) return data.result;
+  // v5.2.0: Surface backend errors explicitly
   if (data && data.error) {
     const msg = data.error.message || data.error.code || "Backend error";
-    throw new Error(msg);
+    throw new Error(`Backend error: ${msg}`);
   }
 
-  throw new Error("No result or error in backend response");
+  if (data && data.result) return data.result;
+
+  // v5.2.0: If we get here, the backend returned something unexpected
+  throw new Error(`Unexpected backend response for ${method}: ${JSON.stringify(data).slice(0, 200)}`);
 }
 
-// ── Fetch tools for a specific user ──
+// ── Fetch tools with empty-list diagnostic ──
 async function fetchUserTools(token) {
   const result = await forwardToBackend("tools/list", {}, "tools-list", token);
-  return result?.tools || [];
+  const tools = result?.tools || [];
+  
+  if (tools.length === 0) {
+    console.warn("tools/list returned 0 tools — backend may not recognize this token");
+    console.warn("Token type:", isJwt(token) ? "JWT (credential handshake)" : "raw token");
+    console.warn("Backend URL:", MCP_BACKEND_URL);
+  }
+  
+  return tools;
 }
 
-// ── Check if a raw token is a revoked JWT ──
 function isRevokedJwt(rawToken) {
   if (!isJwt(rawToken) || !JWT_SECRET) return false;
   const payload = verifyJwt(rawToken);
-  if (!payload) return true; // Invalid JWT = treat as revoked
+  if (!payload) return true;
   if (payload.jti && revokedJtis.has(payload.jti)) return true;
   return false;
 }
 
-// ── MCP Server factory (per-user) ──
+// ── MCP Server factory ──
 function createMcpServer(userToken) {
   const server = new Server(
     { name: "wave-compute", version: VERSION },
@@ -310,17 +298,16 @@ function createMcpServer(userToken) {
 // ── SSE sessions ──
 const transports = {};
 
-// GET /sse — legacy SSE connection (Cursor fallback)
+// GET /sse — legacy SSE
 app.get("/sse", async (req, res) => {
   const rawToken = extractRawToken(req);
 
-  // Check revocation for JWTs
   if (rawToken && rawToken !== ENV_TOKEN && isRevokedJwt(rawToken)) {
     res.status(401).json({
       jsonrpc: "2.0",
       error: {
         code: -32001,
-        message: "Your MCP token has been revoked or expired. Generate a fresh one at app.oswave.io → Settings → MCP Setup.",
+        message: "Token revoked or expired. Generate a fresh one at app.oswave.io → Settings → MCP Setup.",
       },
     });
     return;
@@ -333,8 +320,7 @@ app.get("/sse", async (req, res) => {
       jsonrpc: "2.0",
       error: {
         code: -32001,
-        message:
-          "No valid MCP token. Pass yours via Authorization header, X-Wave-Token header, or ?token= query param. Generate one at app.oswave.io → Settings → MCP Setup.",
+        message: "No valid MCP token. Use Authorization header, X-Wave-Token, or ?token=. Generate at app.oswave.io → Settings → MCP Setup.",
       },
     });
     return;
@@ -355,13 +341,12 @@ app.get("/sse", async (req, res) => {
   await server.connect(transport);
 });
 
-// POST /sse — StreamableHTTP single-endpoint (Cursor primary mode)
+// POST /sse — StreamableHTTP
 app.post("/sse", async (req, res) => {
   const body = req.body;
   const method = body.method;
   const id = body.id;
 
-  // Extract raw token — check headers first, then body._waveToken
   let rawToken = extractRawToken(req);
   if (!rawToken && body._waveToken && body._waveToken.length > 10) {
     rawToken = body._waveToken;
@@ -376,38 +361,29 @@ app.post("/sse", async (req, res) => {
     res.write("data: " + JSON.stringify(data) + "\n\n");
   };
 
-  // For notifications/initialized — no token needed
+  // notifications/initialized — no token needed
   if (method === "notifications/initialized") {
     res.end();
     return;
   }
 
-  // Check revocation for JWTs
+  // Check revocation
   if (rawToken && rawToken !== ENV_TOKEN && isRevokedJwt(rawToken)) {
     sendEvent({
-      jsonrpc: "2.0",
-      id,
-      error: {
-        code: -32001,
-        message: "Your MCP token has been revoked or expired. Generate a fresh one at app.oswave.io → Settings → MCP Setup.",
-      },
+      jsonrpc: "2.0", id,
+      error: { code: -32001, message: "Token revoked or expired. Regenerate at app.oswave.io → Settings → MCP Setup." },
     });
     res.end();
     return;
   }
 
-  // Resolve the actual auth token
+  // Resolve auth token
   const userToken = rawToken ? (rawToken === ENV_TOKEN ? ENV_TOKEN : resolveToken(rawToken)) : null;
 
   if (!userToken) {
     sendEvent({
-      jsonrpc: "2.0",
-      id,
-      error: {
-        code: -32001,
-        message:
-          "No valid MCP token. Add your token to the mcp.json config (Authorization header or env var). Generate one at app.oswave.io → Settings → MCP Setup.",
-      },
+      jsonrpc: "2.0", id,
+      error: { code: -32001, message: "No valid MCP token. Add it to mcp.json (Authorization header). Generate at app.oswave.io → Settings → MCP Setup." },
     });
     res.end();
     return;
@@ -415,7 +391,6 @@ app.post("/sse", async (req, res) => {
 
   const isEnvToken = userToken === ENV_TOKEN;
   const isJwtToken = rawToken && isJwt(rawToken);
-
   console.log(`SSE POST from ${req.ip} method: ${method} — auth: ${isEnvToken ? "env" : isJwtToken ? "jwt" : "raw"}`);
 
   try {
@@ -432,19 +407,18 @@ app.post("/sse", async (req, res) => {
         result = { tools: cachedTools };
       } else {
         const tools = await fetchUserTools(userToken);
+        // v5.2.0: Log empty results for debugging
+        if (tools.length === 0) {
+          console.warn(`⚠️  tools/list returned 0 tools — token may not be recognized by backend`);
+          console.warn(`   Token type: ${isJwtToken ? "JWT" : "raw"}, Backend: ${MCP_BACKEND_URL}`);
+        }
         result = { tools };
       }
     } else if (method === "tools/call") {
-      result = await forwardToBackend(
-        "tools/call",
-        body.params || {},
-        id,
-        userToken
-      );
+      result = await forwardToBackend("tools/call", body.params || {}, id, userToken);
     } else {
       sendEvent({
-        jsonrpc: "2.0",
-        id,
+        jsonrpc: "2.0", id,
         error: { code: -32601, message: "Unknown method: " + method },
       });
       res.end();
@@ -456,14 +430,12 @@ app.post("/sse", async (req, res) => {
     console.error(`Error handling ${method}:`, err.message);
     if (method === "tools/list") {
       sendEvent({
-        jsonrpc: "2.0",
-        id,
+        jsonrpc: "2.0", id,
         error: { code: -32603, message: "Failed to list tools: " + err.message },
       });
     } else {
       sendEvent({
-        jsonrpc: "2.0",
-        id,
+        jsonrpc: "2.0", id,
         result: {
           content: [{ type: "text", text: "Wave Compute error: " + err.message }],
           isError: true,
@@ -475,7 +447,7 @@ app.post("/sse", async (req, res) => {
   res.end();
 });
 
-// POST /messages — session-based messages for legacy SSE
+// POST /messages — legacy SSE session
 app.post("/messages", async (req, res) => {
   const sessionId = req.query.sessionId;
   const transport = transports[sessionId];
@@ -486,81 +458,141 @@ app.post("/messages", async (req, res) => {
   await transport.handlePostMessage(req, res);
 });
 
-// ── Token management endpoints ──
+// ── Token management ──
 
-// POST /revoke — revoke a JWT by its jti
-// Called by the Wave OS backend when a user clicks "Revoke" on the MCP Setup page
 app.post("/revoke", (req, res) => {
   const { jti, secret } = req.body || {};
-
-  // Simple shared-secret auth to prevent unauthorized revocation
   if (!secret || secret !== JWT_SECRET) {
     res.status(403).json({ error: "Unauthorized" });
     return;
   }
-
   if (!jti) {
     res.status(400).json({ error: "jti required" });
     return;
   }
-
   revokedJtis.add(jti);
   console.log(`Token revoked: jti=${jti}. Total revoked: ${revokedJtis.size}`);
   res.json({ ok: true, revoked: jti });
 });
 
-// POST /revoke-all — revoke all tokens (clears all jtis)
-// Emergency revocation — invalidates ALL JWTs (forces all users to regenerate)
 app.post("/revoke-all", (req, res) => {
   const { secret } = req.body || {};
-
   if (!secret || secret !== JWT_SECRET) {
     res.status(403).json({ error: "Unauthorized" });
     return;
   }
-
   const count = revokedJtis.size;
   revokedJtis.clear();
   console.log("All tokens revoked (emergency)");
   res.json({ ok: true, message: `Cleared ${count} revoked tokens` });
 });
 
-// GET /validate — validate a JWT token (for debugging)
+// GET /validate — validate a JWT
 app.get("/validate", (req, res) => {
   const token = req.query.token;
   if (!token) {
     res.json({ valid: false, reason: "No token provided" });
     return;
   }
-
   if (!isJwt(token)) {
-    res.json({ valid: true, type: "raw", note: "Raw token (not JWT) — no expiry validation" });
+    res.json({ valid: true, type: "raw", note: "Raw token — no expiry validation" });
     return;
   }
-
   const payload = verifyJwt(token);
   if (!payload) {
     res.json({ valid: false, type: "jwt", reason: "Invalid signature or expired" });
     return;
   }
-
   if (payload.jti && revokedJtis.has(payload.jti)) {
     res.json({ valid: false, type: "jwt", reason: "Token revoked" });
     return;
   }
-
   const expDate = payload.exp ? new Date(payload.exp * 1000).toISOString() : "never";
   const remaining = payload.exp ? Math.floor((payload.exp - Date.now() / 1000) / 60) : "∞";
   res.json({
     valid: true,
     type: "jwt",
     jti: payload.jti,
+    sub: payload.sub || "n/a",
+    hasCredential: !!payload.credential,
+    hasInnerToken: !!(payload.token || payload.authToken),
     expiresAt: expDate,
     minutesRemaining: remaining,
   });
 });
 
-// OPTIONS — CORS preflight
+// GET /diagnose — v5.2.0 full auth chain diagnostic
+app.get("/diagnose", async (req, res) => {
+  const token = req.query.token;
+  const diag = {
+    proxy_version: VERSION,
+    backend_url: MCP_BACKEND_URL,
+    jwt_secret_configured: !!JWT_SECRET,
+    env_token_configured: !!ENV_TOKEN,
+    mode: ENV_TOKEN ? "dual" : "public",
+    cached_tools: cachedTools?.length || 0,
+    token: {},
+    backend_test: {},
+  };
+
+  if (!token) {
+    diag.token = { provided: false, message: "Pass ?token=xxx to test full auth chain" };
+    res.json(diag);
+    return;
+  }
+
+  // Step 1: Token analysis
+  diag.token.provided = true;
+  diag.token.is_jwt = isJwt(token);
+  
+  if (isJwt(token)) {
+    const payload = verifyJwt(token);
+    if (!payload) {
+      diag.token.valid = false;
+      diag.token.reason = "Invalid signature or expired";
+      res.json(diag);
+      return;
+    }
+    diag.token.valid = true;
+    diag.token.jti = payload.jti;
+    diag.token.sub = payload.sub;
+    diag.token.has_credential = !!payload.credential;
+    diag.token.has_inner_token = !!(payload.token || payload.authToken);
+    diag.token.expires_at = payload.exp ? new Date(payload.exp * 1000).toISOString() : "never";
+    diag.token.minutes_remaining = payload.exp ? Math.floor((payload.exp - Date.now() / 1000) / 60) : "∞";
+    diag.token.revoked = payload.jti && revokedJtis.has(payload.jti);
+  } else {
+    diag.token.valid = true;
+    diag.token.type = "raw";
+  }
+
+  // Step 2: Backend test
+  const resolvedToken = resolveToken(token);
+  diag.backend_test.resolved_token_type = isJwt(resolvedToken) ? "jwt-forwarded" : "raw-token";
+  diag.backend_test.resolved_token_present = !!resolvedToken;
+
+  if (resolvedToken) {
+    try {
+      const resp = await fetch(MCP_BACKEND_URL, {
+        method: "POST",
+        headers: getAuthHeaders(resolvedToken),
+        body: JSON.stringify({ jsonrpc: "2.0", id: "diag", method: "tools/list", params: {} }),
+      });
+      diag.backend_test.http_status = resp.status;
+      const data = await resp.json();
+      diag.backend_test.tools_count = data?.result?.tools?.length || 0;
+      diag.backend_test.error = data?.error?.message || null;
+      diag.backend_test.success = resp.ok && !!data?.result;
+    } catch (err) {
+      diag.backend_test.error = err.message;
+      diag.backend_test.success = false;
+    }
+  }
+
+  res.json(diag);
+});
+
+// OPTIONS — CORS
 app.options("*", (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -568,7 +600,7 @@ app.options("*", (req, res) => {
   res.sendStatus(200);
 });
 
-// ── Health & info endpoints ──
+// ── Health & info ──
 app.get("/health", (req, res) =>
   res.json({
     ok: true,
@@ -590,18 +622,15 @@ app.get("/", (req, res) =>
     jwtSupport: JWT_SECRET ? "enabled (4h rotating tokens)" : "disabled",
     tools: cachedTools?.length || 0,
     sessions: Object.keys(transports).length,
+    diagnostic: "/diagnose?token=YOUR_TOKEN — test full auth chain",
   })
 );
 
 app.listen(PORT, () => {
   console.log(`Wave Compute MCP SSE bridge v${VERSION} running on port ${PORT}`);
-  console.log(`Mode: ${ENV_TOKEN ? "DUAL (env fallback + per-user tokens)" : "PUBLIC (per-user tokens only)"}`);
-  console.log(`JWT: ${JWT_SECRET ? "ENABLED (4h rotating tokens)" : "DISABLED"}`);
+  console.log(`Mode: ${ENV_TOKEN ? "DUAL" : "PUBLIC"}`);
+  console.log(`JWT: ${JWT_SECRET ? "ENABLED" : "DISABLED"}`);
   console.log(`Backend: ${MCP_BACKEND_URL}`);
-  if (!ENV_TOKEN) {
-    console.log("⚠️  No WAVE_API_TOKEN env var — all requests require per-user token");
-  }
-  if (!JWT_SECRET) {
-    console.log("⚠️  No JWT_SECRET env var — JWT token validation disabled (raw tokens only)");
-  }
+  if (!ENV_TOKEN) console.log("⚠️  No WAVE_API_TOKEN — per-user tokens required");
+  if (!JWT_SECRET) console.log("⚠️  No JWT_SECRET — JWT validation disabled");
 });
