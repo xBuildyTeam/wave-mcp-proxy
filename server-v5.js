@@ -23,7 +23,7 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "5.2.0";
+const VERSION = "5.3.0";
 
 // ── BACKEND URL ──
 const STALE_URL = "https://oswave.io/api/functions/mcpRouter";
@@ -593,6 +593,61 @@ app.get("/diagnose", async (req, res) => {
 });
 
 // OPTIONS — CORS
+
+// POST /mcp — Standard StreamableHTTP endpoint (Base44 workspace MCP compatibility)
+// Base44 MCP tester POSTs to /mcp with JSON-RPC. Mirrors /sse POST logic but returns JSON not SSE.
+app.post("/mcp", async (req, res) => {
+  const body = req.body;
+  const method = body.method;
+  const id = body.id;
+
+  let rawToken = extractRawToken(req);
+  if (!rawToken && body._waveToken && body._waveToken.length > 10) {
+    rawToken = body._waveToken;
+  }
+
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
+  if (method === "notifications/initialized") {
+    res.json({ jsonrpc: "2.0", id, result: {} });
+    return;
+  }
+
+  if (rawToken && rawToken !== ENV_TOKEN && isRevokedJwt(rawToken)) {
+    res.status(401).json({ jsonrpc: "2.0", id, error: { code: -32001, message: "Token revoked." } });
+    return;
+  }
+
+  const userToken = rawToken ? (rawToken === ENV_TOKEN ? ENV_TOKEN : resolveToken(rawToken)) : null;
+
+  if (!userToken) {
+    res.status(401).json({ jsonrpc: "2.0", id, error: { code: -32001, message: "No valid MCP token. Pass via Authorization header. Generate at app.oswave.io → Settings → MCP Setup." } });
+    return;
+  }
+
+  const isEnvToken = userToken === ENV_TOKEN;
+  console.log(`MCP POST from ${req.ip} method: ${method} — auth: ${isEnvToken ? "env" : "user"}`);
+
+  try {
+    let result;
+    if (method === "initialize") {
+      result = { protocolVersion: body.params?.protocolVersion || "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "wave-compute", version: VERSION } };
+    } else if (method === "tools/list") {
+      result = { tools: isEnvToken && cachedTools ? cachedTools : await fetchUserTools(userToken) };
+    } else if (method === "tools/call") {
+      result = await forwardToBackend("tools/call", body.params || {}, id, userToken);
+    } else {
+      res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Unknown method: " + method } });
+      return;
+    }
+    res.json({ jsonrpc: "2.0", id, result });
+  } catch (err) {
+    console.error(`MCP error ${method}:`, err.message);
+    res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: err.message } });
+  }
+});
+
 app.options("*", (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
