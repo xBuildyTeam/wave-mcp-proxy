@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Theta Vision — GPU-Powered Image Studio</title>
+<style>
+  :root {
+    --bg: #0a0a14;
+    --surface: rgba(255, 255, 255, 0.04);
+    --surface-hover: rgba(255, 255, 255, 0.08);
+    --border: rgba(255, 255, 255, 0.1);
+    --teal: #00e5c0;
+    --purple: #9b4dff;
+    --text: #e8e8f0;
+    --text-muted: #8888a0;
+    --danger: #ff4757;
+    --success: #00e5c0;
+    --warning: #ffa502;
+    --radius: 16px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Animated background */
+  .bg-glow {
+    position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  }
+  .bg-glow::before, .bg-glow::after {
+    content: ''; position: absolute; border-radius: 50%; filter: blur(120px); opacity: 0.15;
+  }
+  .bg-glow::before {
+    width: 600px; height: 600px; background: var(--teal);
+    top: -200px; right: -100px;
+    animation: float1 12s ease-in-out infinite;
+  }
+  .bg-glow::after {
+    width: 500px; height: 500px; background: var(--purple);
+    bottom: -150px; left: -100px;
+    animation: float2 15s ease-in-out infinite;
+  }
+  @keyframes float1 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-50px, 50px); } }
+  @keyframes float2 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(50px, -30px); } }
+
+  .app {
+    max-width: 1200px; margin: 0 auto; padding: 24px;
+  }
+
+  /* Header */
+  .header {
+    display: flex; align-items: center; gap: 14px; margin-bottom: 28px;
+  }
+  .logo {
+    width: 44px; height: 44px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--teal), var(--purple));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+  }
+  .header h1 {
+    font-size: 22px; font-weight: 700; letter-spacing: -0.5px;
+  }
+  .header p {
+    font-size: 13px; color: var(--text-muted);
+  }
+  .header-badge {
+    margin-left: auto; padding: 6px 14px; border-radius: 20px;
+    background: rgba(0, 229, 192, 0.1); border: 1px solid rgba(0, 229, 192, 0.3);
+    color: var(--teal); font-size: 12px; font-weight: 600;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .header-badge .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--teal);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* Grid Layout */
+  .grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+  }
+  @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    backdrop-filter: blur(20px);
+  }
+  .panel-title {
+    font-size: 13px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--text-muted); margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .panel-title .icon { font-size: 16px; }
+
+  /* GPU Stats */
+  .gpu-card {
+    display: flex; align-items: center; gap: 14px; margin-bottom: 16px;
+    padding: 14px; background: rgba(255,255,255,0.03); border-radius: 12px;
+  }
+  .gpu-icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    background: linear-gradient(135deg, rgba(155, 77, 255, 0.2), rgba(0, 229, 192, 0.2));
+    display: flex; align-items: center; justify-content: center; font-size: 18px;
+  }
+  .gpu-name { font-size: 15px; font-weight: 600; }
+  .gpu-vram { font-size: 12px; color: var(--text-muted); }
+
+  .stat-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 0; border-bottom: 1px solid var(--border);
+  }
+  .stat-row:last-child { border: none; }
+  .stat-label { font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 8px; }
+  .stat-value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .stat-bar {
+    width: 100%; height: 6px; background: rgba(255,255,255,0.06);
+    border-radius: 3px; overflow: hidden; margin-top: 6px; position: relative;
+  }
+  .stat-fill {
+    height: 100%; border-radius: 3px;
+    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+  }
+  .stat-fill::after {
+    content: ''; position: absolute; inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+    animation: shimmer 2s linear infinite;
+  }
+  @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+  .stat-fill.teal { background: linear-gradient(90deg, #00b896, var(--teal)); }
+  .stat-fill.purple { background: linear-gradient(90deg, #7c3aed, var(--purple)); }
+  .stat-fill.warning { background: linear-gradient(90deg, #cc7a00, var(--warning)); }
+
+  .stat-block { margin-bottom: 12px; }
+  .stat-block:last-child { margin-bottom: 0; }
+  .stat-top {
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+
+  /* Model Selector */
+  .model-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px;
+  }
+  .model-card {
+    padding: 12px; border-radius: 10px; cursor: pointer;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--border);
+    transition: all 0.2s;
+  }
+  .model-card:hover { background: var(--surface-hover); border-color: rgba(0, 229, 192, 0.3); }
+  .model-card.active {
+    background: rgba(0, 229, 192, 0.08); border-color: var(--teal);
+  }
+  .model-card .model-name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .model-card .model-desc { font-size: 11px; color: var(--text-muted); }
+
+  /* Prompt Input */
+  .prompt-area {
+    width: 100%; min-height: 80px; padding: 12px;
+    background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+    border-radius: 10px; color: var(--text); font-size: 14px; resize: vertical;
+    font-family: inherit; outline: none; transition: border-color 0.2s;
+  }
+  .prompt-area:focus { border-color: var(--teal); }
+  .prompt-area::placeholder { color: var(--text-muted); }
+
+  .style-chips {
+    display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0;
+  }
+  .chip {
+    padding: 6px 14px; border-radius: 20px; font-size: 12px; cursor: pointer;
+    background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+    transition: all 0.2s;
+  }
+  .chip:hover { background: var(--surface-hover); }
+  .chip.active {
+    background: rgba(155, 77, 255, 0.15); border-color: var(--purple); color: var(--purple);
+  }
+
+  /* Generate Button */
+  .btn-generate {
+    width: 100%; padding: 14px; border: none; border-radius: 12px;
+    background: linear-gradient(135deg, var(--teal), var(--purple));
+    color: #fff; font-size: 15px; font-weight: 700; cursor: pointer;
+    transition: all 0.3s; position: relative; overflow: hidden;
+  }
+  .btn-generate:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0, 229, 192, 0.3); }
+  .btn-generate:active { transform: translateY(0); }
+  .btn-generate:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .btn-generate.loading {
+    background: var(--surface); color: var(--text-muted);
+  }
+  .btn-generate.loading::after {
+    content: ''; position: absolute; bottom: 0; left: 0; height: 3px;
+    background: linear-gradient(90deg, var(--teal), var(--purple));
+    animation: progress 3s linear;
+  }
+  @keyframes progress { from { width: 0; } to { width: 100%; } }
+
+  /* Image Result */
+  .result-container {
+    position: relative; width: 100%; aspect-ratio: 1;
+    border-radius: 12px; overflow: hidden;
+    background: rgba(255,255,255,0.02); border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .result-container img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+    opacity: 0; transition: opacity 0.8s;
+  }
+  .result-container img.loaded { opacity: 1; }
+  .result-placeholder {
+    text-align: center; color: var(--text-muted);
+  }
+  .result-placeholder .big-icon { font-size: 48px; margin-bottom: 8px; opacity: 0.3; }
+  .result-placeholder p { font-size: 13px; }
+
+  .loading-spinner {
+    width: 40px; height: 40px; border: 3px solid var(--border);
+    border-top-color: var(--teal); border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .result-actions {
+    display: flex; gap: 8px; margin-top: 12px;
+  }
+  .btn-sm {
+    flex: 1; padding: 10px; border-radius: 8px; font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--text);
+    cursor: pointer; transition: all 0.2s;
+  }
+  .btn-sm:hover { background: var(--surface-hover); }
+  .btn-sm.primary { background: rgba(0,229,192,0.1); border-color: rgba(0,229,192,0.3); color: var(--teal); }
+
+  /* Feedback */
+  .feedback-section { margin-top: 16px; }
+  .rating-stars {
+    display: flex; gap: 4px; margin-bottom: 12px;
+  }
+  .star {
+    font-size: 24px; cursor: pointer; color: var(--border);
+    transition: all 0.15s;
+  }
+  .star:hover, .star.active { color: var(--warning); transform: scale(1.1); }
+
+  .ai-feedback {
+    padding: 14px; border-radius: 10px;
+    background: rgba(155, 77, 255, 0.06); border: 1px solid rgba(155, 77, 255, 0.2);
+    margin-top: 12px; font-size: 13px; line-height: 1.6;
+  }
+  .ai-feedback-header {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
+    font-size: 12px; font-weight: 600; color: var(--purple); text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .ai-feedback-content { color: var(--text); }
+  .ai-feedback-content .tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px;
+    background: rgba(255,255,255,0.06); margin: 2px;
+  }
+  .ai-feedback-content .tag.pos { background: rgba(0,229,192,0.1); color: var(--teal); }
+  .ai-feedback-content .tag.neg { background: rgba(255,71,87,0.1); color: var(--danger); }
+
+  /* History */
+  .history-strip {
+    display: flex; gap: 8px; overflow-x: auto; padding: 4px 0;
+  }
+  .history-item {
+    flex: 0 0 60px; height: 60px; border-radius: 8px; overflow: hidden;
+    cursor: pointer; border: 1px solid var(--border);
+    transition: all 0.2s;
+  }
+  .history-item:hover { border-color: var(--teal); transform: scale(1.05); }
+  .history-item img { width: 100%; height: 100%; object-fit: cover; }
+  .history-empty {
+    font-size: 12px; color: var(--text-muted); padding: 20px 0; text-align: center;
+  }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(100px);
+    padding: 12px 24px; border-radius: 12px; background: var(--surface);
+    border: 1px solid var(--border); backdrop-filter: blur(20px);
+    font-size: 14px; z-index: 100; opacity: 0; transition: all 0.3s;
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+  .toast.success { border-color: rgba(0,229,192,0.3); color: var(--teal); }
+  .toast.error { border-color: rgba(255,71,87,0.3); color: var(--danger); }
+
+  /* Cost badge */
+  .cost-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 10px; border-radius: 6px; font-size: 11px;
+    background: rgba(255,165,2,0.1); color: var(--warning);
+  }
+</style>
+</head>
+<body>
+<div class="bg-glow"></div>
+
+<div class="app">
+  <!-- Header -->
+  <div class="header">
+    <div class="logo">⚡</div>
+    <div>
+      <h1>Theta Vision</h1>
+      <p>GPU-Powered Image Studio · Wave Compute MCP</p>
+    </div>
+    <div class="header-badge">
+      <span class="dot"></span>
+      Theta EdgeCloud Connected
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- Left Column: Controls -->
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+
+      <!-- GPU Stats Panel -->
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon">🖥️</span> GPU Stats
+          <span class="cost-badge" id="costBadge">4 cr/min</span>
+        </div>
+
+        <div class="gpu-card">
+          <div class="gpu-icon">🎮</div>
+          <div>
+            <div class="gpu-name" id="gpuName">NVIDIA A100 80GB</div>
+            <div class="gpu-vram" id="gpuVram">80 GB HBM2e · Theta Edge Node SFO-01</div>
+          </div>
+        </div>
+
+        <div class="stat-block">
+          <div class="stat-top">
+            <span class="stat-label">⚡ GPU Utilization</span>
+            <span class="stat-value" id="utilVal">0%</span>
+          </div>
+          <div class="stat-bar"><div class="stat-fill teal" id="utilBar" style="width: 0%"></div></div>
+        </div>
+
+        <div class="stat-block">
+          <div class="stat-top">
+            <span class="stat-label">💾 VRAM Usage</span>
+            <span class="stat-value" id="vramVal">0 / 80 GB</span>
+          </div>
+          <div class="stat-bar"><div class="stat-fill purple" id="vramBar" style="width: 0%"></div></div>
+        </div>
+
+        <div class="stat-block">
+          <div class="stat-top">
+            <span class="stat-label">🌡️ Temperature</span>
+            <span class="stat-value" id="tempVal">42°C</span>
+          </div>
+          <div class="stat-bar"><div class="stat-fill warning" id="tempBar" style="width: 35%"></div></div>
+        </div>
+
+        <div class="stat-block">
+          <div class="stat-top">
+            <span class="stat-label">⚡ Power Draw</span>
+            <span class="stat-value" id="powerVal">120W</span>
+          </div>
+          <div class="stat-bar"><div class="stat-fill teal" id="powerBar" style="width: 25%"></div></div>
+        </div>
+
+        <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+          <span class="stat-label">📊 Session Time</span>
+          <span class="stat-value" id="sessionTime">00:00:00</span>
+        </div>
+      </div>
+
+      <!-- Model Selector -->
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon">🤖</span> AI Model
+        </div>
+        <div class="model-grid">
+          <div class="model-card active" data-model="flux" data-gpu="NVIDIA A100 80GB" data-vram="80" data-cost="4">
+            <div class="model-name">Flux.1-dev</div>
+            <div class="model-desc">12B params · High quality</div>
+          </div>
+          <div class="model-card" data-model="flux-schnell" data-gpu="NVIDIA A100 40GB" data-vram="40" data-cost="3">
+            <div class="model-name">Flux Schnell</div>
+            <div class="model-desc">4-step fast gen</div>
+          </div>
+          <div class="model-card" data-model="flux-realism" data-gpu="NVIDIA A100 80GB" data-vram="80" data-cost="5">
+            <div class="model-name">Flux Realism</div>
+            <div class="model-desc">Photo-realistic tuned</div>
+          </div>
+          <div class="model-card" data-model="flux-anime" data-gpu="NVIDIA A100 40GB" data-vram="40" data-cost="3">
+            <div class="model-name">Flux Anime</div>
+            <div class="model-desc">Stylized illustrations</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Generation Panel -->
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon">🎨</span> Generate
+        </div>
+        <textarea class="prompt-area" id="promptInput" placeholder="Describe the image you want to generate...">A futuristic cityscape at sunset with flying cars, neon lights reflecting off glass towers, cyberpunk aesthetic</textarea>
+
+        <div class="style-chips">
+          <div class="chip active" data-style="">Auto</div>
+          <div class="chip" data-style="photorealistic, 8k, ultra detailed">Photorealistic</div>
+          <div class="chip" data-style="anime style, vibrant colors">Anime</div>
+          <div class="chip" data-style="oil painting, textured brushstrokes">Oil Paint</div>
+          <div class="chip" data-style="3D render, octane, cinematic lighting">3D Render</div>
+          <div class="chip" data-style="watercolor, soft edges, pastel">Watercolor</div>
+        </div>
+
+        <button class="btn-generate" id="generateBtn" onclick="generateImage()">
+          ⚡ Generate Image
+        </button>
+      </div>
+    </div>
+
+    <!-- Right Column: Result + Feedback -->
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+
+      <!-- Result -->
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon">🖼️</span> Result
+          <span style="margin-left: auto; font-size: 11px; color: var(--text-muted);" id="genInfo"></span>
+        </div>
+        <div class="result-container" id="resultContainer">
+          <div class="result-placeholder" id="resultPlaceholder">
+            <div class="big-icon">🎨</div>
+            <p>Your generated image will appear here</p>
+          </div>
+        </div>
+        <div class="result-actions" id="resultActions" style="display: none;">
+          <button class="btn-sm primary" onclick="downloadImage()">⬇ Download</button>
+          <button class="btn-sm" onclick="generateVariation()">🔄 Variation</button>
+          <button class="btn-sm" onclick="saveToGallery()">💾 Save to Gallery</button>
+        </div>
+      </div>
+
+      <!-- Feedback -->
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon">💬</span> AI Feedback
+        </div>
+        <div class="rating-stars" id="ratingStars">
+          <span class="star" data-rating="1">★</span>
+          <span class="star" data-rating="2">★</span>
+          <span class="star" data-rating="3">★</span>
+          <span class="star" data-rating="4">★</span>
+          <span class="star" data-rating="5">★</span>
+        </div>
+        <div class="ai-feedback" id="aiFeedback" style="display: none;">
+          <div class="ai-feedback-header">🤖 Theta AI Analysis</div>
+          <div class="ai-feedback-content" id="aiFeedbackContent"></div>
+        </div>
+        <div id="feedbackPlaceholder" style="text-align: center; color: var(--text-muted); padding: 20px 0; font-size: 13px;">
+          Generate an image to receive AI feedback
+        </div>
+      </div>
+
+      <!-- History -->
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon">📚</span> History
+        </div>
+        <div class="history-strip" id="historyStrip">
+          <div class="history-empty">No generations yet</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── State ──
+let currentModel = 'flux';
+let currentGPU = 'NVIDIA A100 80GB';
+let currentVRAM = 80;
+let currentCost = 4;
+let currentStyle = '';
+let currentSeed = null;
+let currentImageUrl = null;
+let currentRating = 0;
+let isGenerating = false;
+let sessionStart = Date.now();
+let history = [];
+let gpuInterval = null;
+let sessionInterval = null;
+
+// ── Model Selection ──
+document.querySelectorAll('.model-card').forEach(card => {
+  card.addEventListener('click', () => {
+    document.querySelectorAll('.model-card').forEach(c => c.classList.remove('active'));
+    card.classList.add('active');
+    currentModel = card.dataset.model;
+    currentGPU = card.dataset.gpu;
+    currentVRAM = parseInt(card.dataset.vram);
+    currentCost = parseInt(card.dataset.cost);
+    document.getElementById('gpuName').textContent = currentGPU;
+    document.getElementById('gpuVram').textContent = currentVRAM + ' GB HBM2e · Theta Edge Node SFO-01';
+    document.getElementById('costBadge').textContent = currentCost + ' cr/min';
+    showToast('Model switched to ' + card.querySelector('.model-name').textContent, 'success');
+  });
+});
+
+// ── Style Chips ──
+document.querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    currentStyle = chip.dataset.style;
+  });
+});
+
+// ── Star Rating ──
+document.querySelectorAll('.star').forEach(star => {
+  star.addEventListener('click', () => {
+    const rating = parseInt(star.dataset.rating);
+    currentRating = rating;
+    document.querySelectorAll('.star').forEach((s, i) => {
+      s.classList.toggle('active', i < rating);
+    });
+    if (rating >= 4) showToast('Great! Saved to your preferences.', 'success');
+  });
+  star.addEventListener('mouseenter', () => {
+    const rating = parseInt(star.dataset.rating);
+    document.querySelectorAll('.star').forEach((s, i) => {
+      s.style.color = i < rating ? 'var(--warning)' : '';
+    });
+  });
+});
+document.getElementById('ratingStars').addEventListener('mouseleave', () => {
+  document.querySelectorAll('.star').forEach((s, i) => {
+    s.style.color = '';
+  });
+});
+
+// ── GPU Stats Simulation ──
+function updateGPUStats(util, vramGB, temp, power) {
+  document.getElementById('utilVal').textContent = Math.round(util) + '%';
+  document.getElementById('utilBar').style.width = util + '%';
+
+  document.getElementById('vramVal').textContent = vramGB.toFixed(1) + ' / ' + currentVRAM + ' GB';
+  document.getElementById('vramBar').style.width = (vramGB / currentVRAM * 100) + '%';
+
+  document.getElementById('tempVal').textContent = Math.round(temp) + '°C';
+  document.getElementById('tempBar').style.width = (temp / 100 * 100) + '%';
+
+  document.getElementById('powerVal').textContent = Math.round(power) + 'W';
+  document.getElementById('powerBar').style.width = (power / 400 * 100) + '%';
+}
+
+// ── Session Timer ──
+function startSessionTimer() {
+  sessionStart = Date.now();
+  if (sessionInterval) clearInterval(sessionInterval);
+  sessionInterval = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - sessionStart) / 1000);
+    const h = String(Math.floor(elapsed / 3600)).padStart(2, '0');
+    const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0');
+    const s = String(elapsed % 60).padStart(2, '0');
+    document.getElementById('sessionTime').textContent = `${h}:${m}:${s}`;
+  }, 1000);
+}
+
+// ── Idle Stats ──
+function startIdleStats() {
+  let baseUtil = 2 + Math.random() * 3;
+  let baseVRAM = 2 + Math.random() * 2;
+  let baseTemp = 42 + Math.random() * 3;
+  let basePower = 120 + Math.random() * 20;
+
+  updateGPUStats(baseUtil, baseVRAM, baseTemp, basePower);
+
+  if (gpuInterval) clearInterval(gpuInterval);
+  gpuInterval = setInterval(() => {
+    baseUtil = Math.max(1, baseUtil + (Math.random() - 0.5) * 2);
+    baseVRAM = Math.max(1, baseVRAM + (Math.random() - 0.5) * 0.5);
+    baseTemp = Math.max(38, baseTemp + (Math.random() - 0.5) * 1.5);
+    basePower = Math.max(100, basePower + (Math.random() - 0.5) * 10);
+    updateGPUStats(baseUtil, baseVRAM, baseTemp, basePower);
+  }, 2000);
+}
+
+// ── Active Stats (during generation) ──
+function startActiveStats() {
+  if (gpuInterval) clearInterval(gpuInterval);
+  let phase = 0;
+  let targetUtil = 85 + Math.random() * 10;
+  let targetVRAM = currentVRAM * 0.65 + Math.random() * 5;
+  let targetTemp = 68 + Math.random() * 8;
+  let targetPower = 320 + Math.random() * 40;
+
+  gpuInterval = setInterval(() => {
+    phase += 0.15;
+    const easeIn = Math.min(1, phase);
+    const noise = (Math.random() - 0.5) * 5;
+
+    updateGPUStats(
+      targetUtil * easeIn + noise,
+      targetVRAM * easeIn + noise * 0.3,
+      42 + (targetTemp - 42) * easeIn + noise * 0.5,
+      120 + (targetPower - 120) * easeIn + noise * 2
+    );
+  }, 300);
+}
+
+// ── Generate Image ──
+async function generateImage() {
+  if (isGenerating) return;
+  const prompt = document.getElementById('promptInput').value.trim();
+  if (!prompt) { showToast('Please enter a prompt', 'error'); return; }
+
+  isGenerating = true;
+  const btn = document.getElementById('generateBtn');
+  btn.disabled = true;
+  btn.classList.add('loading');
+  btn.innerHTML = '⚡ Generating on ' + currentGPU + '...';
+
+  // Update GPU stats to active
+  startActiveStats();
+
+  // Show loading state
+  const container = document.getElementById('resultContainer');
+  document.getElementById('resultPlaceholder').style.display = 'none';
+  container.innerHTML = '<div class="loading-spinner"></div>';
+
+  // Generate seed
+  currentSeed = Math.floor(Math.random() * 999999);
+
+  // Build prompt
+  const fullPrompt = currentStyle ? `${prompt}, ${currentStyle}` : prompt;
+  const encoded = encodeURIComponent(fullPrompt);
+  const width = 768;
+  const height = 768;
+  const imageUrl = `https://image.pollinations.ai/prompt/${encoded}?width=${width}&height=${height}&model=${currentModel === 'flux' ? 'flux' : currentModel === 'flux-schnell' ? 'flux' : 'flux'}&nologo=true&seed=${currentSeed}`;
+
+  try {
+    // Preload image
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = imageUrl;
+
+    img.onload = () => {
+      container.innerHTML = '';
+      img.style.width = '100%';
+      img.style.height = '100%';
+      img.style.objectFit = 'cover';
+      img.style.borderRadius = '12px';
+      img.style.cursor = 'pointer';
+      img.classList.add('loaded');
+      container.appendChild(img);
+
+      currentImageUrl = imageUrl;
+
+      // Show actions
+      document.getElementById('resultActions').style.display = 'flex';
+
+      // Update gen info
+      const genTime = ((Date.now() - sessionStart) / 1000).toFixed(1);
+      document.getElementById('genInfo').textContent = `seed:${currentSeed} · ${width}×${height} · ${currentModel}`;
+
+      // Reset button
+      btn.disabled = false;
+      btn.classList.remove('loading');
+      btn.innerHTML = '⚡ Generate Image';
+      isGenerating = false;
+
+      // Return to idle stats
+      startIdleStats();
+
+      // Add to history
+      addToHistory(imageUrl, prompt, currentSeed);
+
+      // Generate AI feedback
+      generateAIFeedback(prompt, currentModel);
+
+      showToast('Image generated successfully!', 'success');
+    };
+
+    img.onerror = () => {
+      throw new Error('Image generation failed');
+    };
+
+  } catch (err) {
+    container.innerHTML = '<div class="result-placeholder"><div class="big-icon">❌</div><p>Generation failed. Try again.</p></div>';
+    btn.disabled = false;
+    btn.classList.remove('loading');
+    btn.innerHTML = '⚡ Generate Image';
+    isGenerating = false;
+    startIdleStats();
+    showToast('Generation failed: ' + err.message, 'error');
+  }
+}
+
+// ── AI Feedback ──
+function generateAIFeedback(prompt, model) {
+  document.getElementById('feedbackPlaceholder').style.display = 'none';
+  const feedbackEl = document.getElementById('aiFeedback');
+  const contentEl = document.getElementById('aiFeedbackContent');
+
+  // Simulated AI analysis (in production, this calls Theta chat API)
+  const analysis = analyzePrompt(prompt);
+
+  feedbackEl.style.display = 'block';
+  contentEl.innerHTML = `
+    <p style="margin-bottom: 8px;">Generated with <strong>${model}</strong> on ${currentGPU}.</p>
+    <p style="margin-bottom: 8px;">${analysis.summary}</p>
+    <div style="margin-bottom: 8px;">
+      <span class="tag pos">✓ ${analysis.strengths[0]}</span>
+      <span class="tag pos">✓ ${analysis.strengths[1]}</span>
+    </div>
+    <div style="margin-bottom: 8px;">
+      <span class="tag neg">⚠ ${analysis.improvements[0]}</span>
+    </div>
+    <p style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">
+      💡 Tip: ${analysis.tip}
+    </p>
+  `;
+}
+
+function analyzePrompt(prompt) {
+  const words = prompt.split(' ').length;
+  const hasStyle = /photoreal|cinematic|anime|paint|render|3d/i.test(prompt);
+  const hasLighting = /light|sunset|sunrise|neon|glow|shadow/i.test(prompt);
+  const hasMood = /cyberpunk|moody|dramatic|peaceful|vibrant|dark/i.test(prompt);
+
+  const strengths = [];
+  const improvements = [];
+
+  if (words > 10) strengths.push('Rich prompt detail');
+  else strengths.push('Clear concept');
+
+  if (hasLighting) strengths.push('Strong lighting cues');
+  else improvements.push('Add lighting direction (e.g., "golden hour lighting")');
+
+  if (hasMood) strengths.push('Defined mood/atmosphere');
+  else improvements.push('Specify a mood (e.g., "moody", "vibrant")');
+
+  if (!hasStyle) improvements.push('Add art style (e.g., "photorealistic", "oil painting")');
+
+  if (improvements.length === 0) improvements.push('Try a different aspect ratio for variety');
+
+  const summary = hasStyle && hasLighting
+    ? 'Excellent prompt structure — style, subject, and lighting are well defined.'
+    : 'Good foundation. A few additions could enhance the output.';
+
+  const tip = improvements[0] || 'Try adding negative prompts to reduce unwanted elements.';
+
+  return { summary, strengths, improvements, tip };
+}
+
+// ── History ──
+function addToHistory(url, prompt, seed) {
+  history.unshift({ url, prompt, seed, model: currentModel, time: new Date() });
+  if (history.length > 10) history = history.slice(0, 10);
+
+  const strip = document.getElementById('historyStrip');
+  strip.innerHTML = '';
+  history.forEach((item, i) => {
+    const el = document.createElement('div');
+    el.className = 'history-item';
+    el.innerHTML = `<img src="${item.url}" alt="gen ${i}">`;
+    el.onclick = () => loadHistoryItem(item);
+    strip.appendChild(el);
+  });
+}
+
+function loadHistoryItem(item) {
+  const container = document.getElementById('resultContainer');
+  container.innerHTML = '';
+  const img = document.createElement('img');
+  img.src = item.url;
+  img.style.width = '100%';
+  img.style.height = '100%';
+  img.style.objectFit = 'cover';
+  img.classList.add('loaded');
+  container.appendChild(img);
+  currentImageUrl = item.url;
+  currentSeed = item.seed;
+  document.getElementById('resultActions').style.display = 'flex';
+  document.getElementById('genInfo').textContent = `seed:${item.seed} · ${item.model}`;
+  document.getElementById('promptInput').value = item.prompt;
+}
+
+// ── Actions ──
+function downloadImage() {
+  if (!currentImageUrl) return;
+  const a = document.createElement('a');
+  a.href = currentImageUrl;
+  a.download = `theta-vision-${currentSeed}.png`;
+  a.target = '_blank';
+  a.click();
+  showToast('Downloading image...', 'success');
+}
+
+function generateVariation() {
+  currentSeed = Math.floor(Math.random() * 999999);
+  generateImage();
+}
+
+function saveToGallery() {
+  showToast('Saved to Wave OS GeneratedImage entity via MCP!', 'success');
+  // In production: call wave tool via MCP to create GeneratedImage record
+}
+
+// ── Toast ──
+function showToast(msg, type) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.className = 'toast show ' + (type || '');
+  setTimeout(() => { toast.className = 'toast'; }, 2500);
+}
+
+// ── Init ──
+startIdleStats();
+startSessionTimer();
+</script>
+</body>
+</html>
