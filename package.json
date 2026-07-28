@@ -3,9 +3,9 @@
   "version": "5.0.0",
   "type": "module",
   "description": "Multi-user MCP SSE bridge for Wave OS — per-user API token auth via Railway",
-  "main": "server-v5.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node server-v5.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.21.0",
