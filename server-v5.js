@@ -25,7 +25,7 @@ app.use(express.json());
 const WAVE_POOL_TARGET = "https://wave-pool.base44.app";
 const WAVE_POOL_HOST = "dependable-energy-production.up.railway.app";
 
-async function proxyToWavePool(req, res, { stripPrefix, rewrite }) {
+async function proxyToWavePool(req, res, { stripPrefix, rewrite, injectAuth }) {
   const targetPath = stripPrefix
     ? (req.originalUrl.replace(/^\/wave-pool/, "") || "/")
     : req.originalUrl;
@@ -87,6 +87,33 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite }) {
       body = Buffer.from(text, "utf-8");
     }
 
+    if (injectAuth && contentType.includes("text/html")) {
+      let html = Buffer.from(body).toString("utf-8");
+      const AUTH_BRIDGE = '<script>' +
+        '(function(){' +
+        'window.addEventListener("message",function(e){' +
+        'if(e.data&&e.data.type==="WAVE_OS_AUTH"&&e.data.token){' +
+        'try{localStorage.setItem("base44_access_token",e.data.token);' +
+        'if(e.data.appId)localStorage.setItem("base44_app_id",e.data.appId);' +
+        '}catch(err){}' +
+        'window.location.reload();' +
+        '}' +
+        '});' +
+        '// Also check URL param for initial load' +
+        'var p=new URLSearchParams(window.location.search);' +
+        'var t=p.get("access_token");' +
+        'if(t){' +
+        'try{localStorage.setItem("base44_access_token",t);}catch(err){}' +
+        'p.delete("access_token");' +
+        'var nu=window.location.pathname+(p.toString()?"?"+p.toString():"")+window.location.hash;' +
+        'window.history.replaceState({},document.title,nu);' +
+        '}' +
+        '})();' +
+        '</scr' + 'ipt>';
+      html = html.replace(/<head>/i, '<head>' + AUTH_BRIDGE);
+      body = Buffer.from(html, "utf-8");
+    }
+
     res.send(Buffer.from(body));
   } catch (err) {
     console.error("Wave Pool proxy error:", err.message);
@@ -99,14 +126,14 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite }) {
 app.use((req, res, next) => {
   const host = (req.headers.host || "").split(":")[0];
   if (host === WAVE_POOL_HOST) {
-    return proxyToWavePool(req, res, { stripPrefix: false, rewrite: false });
+    return proxyToWavePool(req, res, { stripPrefix: false, rewrite: false, injectAuth: true });
   }
   next();
 });
 
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "5.6.1";
+const VERSION = "5.6.2";
 
 // ── BACKEND URL ──
 const STALE_URL = "https://oswave.io/api/functions/mcpRouter";
