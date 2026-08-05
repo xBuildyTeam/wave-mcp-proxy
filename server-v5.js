@@ -23,7 +23,7 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "5.5.0";
+const VERSION = "5.6.0";
 
 // ── BACKEND URL ──
 const STALE_URL = "https://oswave.io/api/functions/mcpRouter";
@@ -683,15 +683,24 @@ app.get("/", (req, res) =>
 );
 
 // ── WAVE POOL REVERSE PROXY ──
-// Allows embedding wave-pool.base44.app in an iframe by stripping
-// X-Frame-Options and CSP frame-ancestors from all responses.
-// Rewrites absolute paths in HTML to /wave-pool/ prefix so assets load through the proxy.
+// Two modes:
+// 1. HOST-BASED (preferred): requests arriving via the dedicated domain
+//    (WAVE_POOL_HOST) are passed through 1:1 with no path prefix — the
+//    upstream SPA sees requests exactly as if hitting its own root, so its
+//    client-side router, <base> tag, and history API all just work with zero
+//    rewriting needed. This avoids the fragility of path-prefix rewriting.
+// 2. PATH-BASED (legacy /wave-pool mount): kept for backward compatibility,
+//    still does prefix stripping + HTML/asset rewriting.
+// Both strip X-Frame-Options / CSP so the app can be iframed.
 const WAVE_POOL_TARGET = "https://wave-pool.base44.app";
+const WAVE_POOL_HOST = "dependable-energy-production.up.railway.app";
 
-app.use("/wave-pool", async (req, res) => {
-  const targetPath = req.originalUrl.replace(/^\/wave-pool/, "") || "/";
+async function proxyToWavePool(req, res, { stripPrefix, rewrite }) {
+  const targetPath = stripPrefix
+    ? (req.originalUrl.replace(/^\/wave-pool/, "") || "/")
+    : req.originalUrl;
   const targetUrl = WAVE_POOL_TARGET + targetPath;
-  
+
   try {
     const headers = { ...req.headers };
     headers.host = "wave-pool.base44.app";
@@ -699,85 +708,76 @@ app.use("/wave-pool", async (req, res) => {
     delete headers["x-forwarded-for"];
     delete headers["x-forwarded-proto"];
     delete headers["x-forwarded-host"];
-    
+
     const fetchOpts = { method: req.method, headers };
-    
     if (req.method !== "GET" && req.method !== "HEAD") {
       fetchOpts.body = JSON.stringify(req.body);
     }
-    
+
     const response = await fetch(targetUrl, fetchOpts);
-    
-    // Strip frame-blocking headers
+
     const responseHeaders = {};
     response.headers.forEach((value, key) => {
       if (!["x-frame-options", "content-security-policy", "content-security-policy-report-only", "content-encoding", "content-length", "transfer-encoding"].includes(key.toLowerCase())) {
         responseHeaders[key] = value;
       }
     });
-    
-    // Fix cookies for cross-domain proxy
+
     if (responseHeaders["set-cookie"]) {
-      const cookies = Array.isArray(responseHeaders["set-cookie"]) 
-        ? responseHeaders["set-cookie"] 
+      const cookies = Array.isArray(responseHeaders["set-cookie"])
+        ? responseHeaders["set-cookie"]
         : [responseHeaders["set-cookie"]];
-      responseHeaders["set-cookie"] = cookies.map(c => 
+      responseHeaders["set-cookie"] = cookies.map(c =>
         c.replace(/;\s*Domain=[^;]+/gi, "").replace(/;\s*SameSite=[^;]*/gi, "; SameSite=None; Secure")
       );
     }
-    
+
     res.status(response.status);
     for (const [key, value] of Object.entries(responseHeaders)) {
       res.setHeader(key, value);
     }
-    
+
     const contentType = (responseHeaders["content-type"] || "").toLowerCase();
     let body = await response.arrayBuffer();
-    
-    // Rewrite absolute paths in HTML to route through /wave-pool/ prefix
-    if (contentType.includes("text/html")) {
+
+    if (rewrite && contentType.includes("text/html")) {
       let html = Buffer.from(body).toString("utf-8");
-      // Add base tag for asset resolution + inject SPA router patch
-      // The SPA's client-side router sees /wave-pool/ and shows "Page Not Found"
-      // Inject a script that rewrites the perceived path to / before the SPA loads
-      const SPA_ROUTER_PATCH = '<head><base href="/wave-pool/">' +
-        '<script>' +
-        '(function(){' +
-        'var p=window.location.pathname;' +
-        'if(p.startsWith("/wave-pool")){' +
-        'var np=p.replace(/^\\/wave-pool/,"")||"/";' +
-        'try{history.replaceState(null,"",np+window.location.search+window.location.hash)}catch(e){}' +
-        '}' +
-        'var op=history.pushState,or=history.replaceState;' +
-        'history.pushState=function(s,t,u){if(u&&typeof u==="string"&&u.startsWith("/")&&!u.startsWith("/wave-pool")){u="/wave-pool"+u}return op.call(this,s,t,u)};' +
-        'history.replaceState=function(s,t,u){if(u&&typeof u==="string"&&u.startsWith("/")&&!u.startsWith("/wave-pool")){u="/wave-pool"+u}return or.call(this,s,t,u)};' +
-        '})();' +
-        '</scr' + 'ipt>';
-      html = html.replace(/<head>/i, SPA_ROUTER_PATCH);
-      // Rewrite absolute paths in src, href attributes (skip protocol-relative and already-prefixed)
+      html = html.replace(/<head>/i, '<head><base href="/wave-pool/">');
       html = html.replace(/(src|href|action)=(["'])(\/[^"']*["'])/gi, (match, attr, quote, path) => {
         if (path.startsWith("/wave-pool") || path.startsWith("//")) return match;
         return `${attr}=${quote}/wave-pool${path}`;
       });
-      // Rewrite fetch() calls with absolute paths
       html = html.replace(/fetch\((["'])(\/[^"']*)["']/gi, 'fetch($1/wave-pool$2"');
       body = Buffer.from(html, "utf-8");
-    } else if (contentType.includes("javascript") || contentType.includes("css")) {
+    } else if (rewrite && (contentType.includes("javascript") || contentType.includes("css"))) {
       let text = Buffer.from(body).toString("utf-8");
-      // Rewrite absolute asset paths
       text = text.replace(/(["'])(\/assets\/[^"']*)["']/gi, '$1/wave-pool$2"');
       text = text.replace(/(["'])(\/api\/[^"']*)["']/gi, '$1/wave-pool$2"');
       text = text.replace(/url\((["']?)(\/[^"')]*["')]?\))/gi, 'url($1/wave-pool$2');
       body = Buffer.from(text, "utf-8");
     }
-    
+
     res.send(Buffer.from(body));
   } catch (err) {
     console.error("Wave Pool proxy error:", err.message);
     res.status(502).send("Wave Pool proxy error: " + err.message);
   }
+}
+
+// Host-based passthrough — MUST be registered before the path-based /wave-pool
+// mount below, and must check hostname on every request regardless of path.
+app.use((req, res, next) => {
+  const host = (req.headers.host || "").split(":")[0];
+  if (host === WAVE_POOL_HOST) {
+    return proxyToWavePool(req, res, { stripPrefix: false, rewrite: false });
+  }
+  next();
 });
 
+// Legacy path-based mount (kept for backward compatibility)
+app.use("/wave-pool", async (req, res) => {
+  return proxyToWavePool(req, res, { stripPrefix: true, rewrite: true });
+});
 // ── END WAVE POOL REVERSE PROXY ──
 app.listen(PORT, () => {
   console.log(`Wave Compute MCP SSE bridge v${VERSION} running on port ${PORT}`);
