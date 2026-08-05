@@ -38,10 +38,12 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite, injectAuth }) {
     delete headers["x-forwarded-for"];
     delete headers["x-forwarded-proto"];
     delete headers["x-forwarded-host"];
+    delete headers["content-length"];
 
     const fetchOpts = { method: req.method, headers };
     if (req.method !== "GET" && req.method !== "HEAD") {
       fetchOpts.body = JSON.stringify(req.body);
+      fetchOpts.duplex = "half";
     }
 
     const response = await fetch(targetUrl, fetchOpts);
