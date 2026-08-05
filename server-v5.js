@@ -23,7 +23,7 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "5.3.0";
+const VERSION = "5.4.0";
 
 // ── BACKEND URL ──
 const STALE_URL = "https://oswave.io/api/functions/mcpRouter";
@@ -678,9 +678,92 @@ app.get("/", (req, res) =>
     tools: cachedTools?.length || 0,
     sessions: Object.keys(transports).length,
     diagnostic: "/diagnose?token=YOUR_TOKEN — test full auth chain",
+    wavePoolProxy: "/wave-pool — iframe-safe proxy for wave-pool.base44.app",
   })
 );
 
+// ── WAVE POOL REVERSE PROXY ──
+// Allows embedding wave-pool.base44.app in an iframe by stripping
+// X-Frame-Options and CSP frame-ancestors from all responses.
+// Rewrites absolute paths in HTML to /wave-pool/ prefix so assets load through the proxy.
+const WAVE_POOL_TARGET = "https://wave-pool.base44.app";
+
+app.use("/wave-pool", async (req, res) => {
+  const targetPath = req.originalUrl.replace(/^\/wave-pool/, "") || "/";
+  const targetUrl = WAVE_POOL_TARGET + targetPath;
+  
+  try {
+    const headers = { ...req.headers };
+    headers.host = "wave-pool.base44.app";
+    headers.origin = WAVE_POOL_TARGET;
+    delete headers["x-forwarded-for"];
+    delete headers["x-forwarded-proto"];
+    delete headers["x-forwarded-host"];
+    
+    const fetchOpts = { method: req.method, headers };
+    
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      fetchOpts.body = JSON.stringify(req.body);
+    }
+    
+    const response = await fetch(targetUrl, fetchOpts);
+    
+    // Strip frame-blocking headers
+    const responseHeaders = {};
+    response.headers.forEach((value, key) => {
+      if (!["x-frame-options", "content-security-policy", "content-security-policy-report-only", "content-encoding", "content-length", "transfer-encoding"].includes(key.toLowerCase())) {
+        responseHeaders[key] = value;
+      }
+    });
+    
+    // Fix cookies for cross-domain proxy
+    if (responseHeaders["set-cookie"]) {
+      const cookies = Array.isArray(responseHeaders["set-cookie"]) 
+        ? responseHeaders["set-cookie"] 
+        : [responseHeaders["set-cookie"]];
+      responseHeaders["set-cookie"] = cookies.map(c => 
+        c.replace(/;\s*Domain=[^;]+/gi, "").replace(/;\s*SameSite=[^;]*/gi, "; SameSite=None; Secure")
+      );
+    }
+    
+    res.status(response.status);
+    for (const [key, value] of Object.entries(responseHeaders)) {
+      res.setHeader(key, value);
+    }
+    
+    const contentType = (responseHeaders["content-type"] || "").toLowerCase();
+    let body = await response.arrayBuffer();
+    
+    // Rewrite absolute paths in HTML to route through /wave-pool/ prefix
+    if (contentType.includes("text/html")) {
+      let html = Buffer.from(body).toString("utf-8");
+      // Add base tag so relative paths resolve correctly
+      html = html.replace(/<head>/i, '<head><base href="/wave-pool/">');
+      // Rewrite absolute paths in src, href attributes (skip protocol-relative and already-prefixed)
+      html = html.replace(/(src|href|action)=(["'])(\/[^"']*["'])/gi, (match, attr, quote, path) => {
+        if (path.startsWith("/wave-pool") || path.startsWith("//")) return match;
+        return `${attr}=${quote}/wave-pool${path}`;
+      });
+      // Rewrite fetch() calls with absolute paths
+      html = html.replace(/fetch\((["'])(\/[^"']*)["']/gi, 'fetch($1/wave-pool$2"');
+      body = Buffer.from(html, "utf-8");
+    } else if (contentType.includes("javascript") || contentType.includes("css")) {
+      let text = Buffer.from(body).toString("utf-8");
+      // Rewrite absolute asset paths
+      text = text.replace(/(["'])(\/assets\/[^"']*)["']/gi, '$1/wave-pool$2"');
+      text = text.replace(/(["'])(\/api\/[^"']*)["']/gi, '$1/wave-pool$2"');
+      text = text.replace(/url\((["']?)(\/[^"')]*["')]?\))/gi, 'url($1/wave-pool$2');
+      body = Buffer.from(text, "utf-8");
+    }
+    
+    res.send(Buffer.from(body));
+  } catch (err) {
+    console.error("Wave Pool proxy error:", err.message);
+    res.status(502).send("Wave Pool proxy error: " + err.message);
+  }
+});
+
+// ── END WAVE POOL REVERSE PROXY ──
 app.listen(PORT, () => {
   console.log(`Wave Compute MCP SSE bridge v${VERSION} running on port ${PORT}`);
   console.log(`Mode: ${ENV_TOKEN ? "DUAL" : "PUBLIC"}`);
