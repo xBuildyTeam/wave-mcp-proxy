@@ -91,38 +91,33 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite, injectAuth }) {
       let html = Buffer.from(body).toString("utf-8");
       const AUTH_BRIDGE = '<script>' +
         '(function(){' +
-        // Handshake: send "ready" to parent, wait for session data
-        // Same pattern as Wave Hi: iframe says ready -> Wave OS sends session
-        'window.parent.postMessage({type:"WAVE_POOL_READY"}, "*");' +
+        // Check if we already have a token — if so, skip the handshake entirely
+        'var existingToken=localStorage.getItem("base44_access_token");' +
+        // URL param access_token (Base44 native) — store and clean URL
+        'var u=new URLSearchParams(window.location.search);' +
+        'var urlToken=u.get("access_token");' +
+        'if(urlToken){try{localStorage.setItem("base44_access_token",urlToken);}catch(e){}u.delete("access_token");' +
+        'var nu=window.location.pathname+(u.toString()?"?"+u.toString():"")+window.location.hash;' +
+        'window.history.replaceState({},document.title,nu);existingToken=urlToken;}' +
+        // Only do the handshake if we DONT have a token yet
+        'if(!existingToken){' +
+        'window.parent.postMessage({type:"WAVE_POOL_READY"},"*");' +
         'window.addEventListener("message",function(e){' +
         'if(e.data&&e.data.type==="WAVE_OS_SESSION"){' +
         'var p=e.data.payload||e.data;' +
-        // Store the auth token (cross-app compatible Base44 token)
         'if(p.authToken){try{localStorage.setItem("base44_access_token",p.authToken);}catch(err){}}' +
         'if(p.access_token){try{localStorage.setItem("base44_access_token",p.access_token);}catch(err){}}' +
-        // Store email for fallback form pre-fill
-        'if(p.userEmail||p.email){' +
-        'var em=p.userEmail||p.email;' +
-        'try{localStorage.setItem("bridge_email",em);}catch(err){}' +
-        '}' +
+        'if(p.userEmail||p.email){try{localStorage.setItem("bridge_email",p.userEmail||p.email);}catch(err){}}' +
         'window.location.reload();' +
         '}' +
         '});' +
-        // Also check URL param for access_token (Base44 native pattern)
-        'var u=new URLSearchParams(window.location.search);' +
-        'var t=u.get("access_token");' +
-        'if(t){' +
-        'try{localStorage.setItem("base44_access_token",t);}catch(err){}' +
-        'u.delete("access_token");' +
-        'var nu=window.location.pathname+(u.toString()?"?"+u.toString():"")+window.location.hash;' +
-        'window.history.replaceState({},document.title,nu);' +
         '}' +
-        // Pre-fill email from localStorage if login form is visible
-        'function fillEmail(){var el=document.querySelector("input[type=email],input[name=email],input[placeholder*=email i]");' +
+        // Fallback: pre-fill email if login form is visible after 2s
+        'setTimeout(function(){' +
+        'var el=document.querySelector("input[type=email],input[name=email],input[placeholder*=email i]");' +
         'if(el){var em=localStorage.getItem("bridge_email");if(em){el.value=em;el.dispatchEvent(new Event("input",{bubbles:true}));}' +
-        'var pw=document.querySelector("input[type=password],input[name=password]");' +
-        'if(pw)pw.focus();}}' +
-        'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",fillEmail);}else{fillEmail();}' +
+        'var pw=document.querySelector("input[type=password],input[name=password]");if(pw)pw.focus();}' +
+        '},2000);' +
         '})();' +
         '</scr' + 'ipt>';
       html = html.replace(/<head>/i, '<head>' + AUTH_BRIDGE);
@@ -148,7 +143,7 @@ app.use((req, res, next) => {
 
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "5.6.4";
+const VERSION = "5.6.5";
 
 // ── BACKEND URL ──
 const STALE_URL = "https://oswave.io/api/functions/mcpRouter";
