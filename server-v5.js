@@ -23,7 +23,7 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "5.4.0";
+const VERSION = "5.5.0";
 
 // ── BACKEND URL ──
 const STALE_URL = "https://oswave.io/api/functions/mcpRouter";
@@ -737,8 +737,23 @@ app.use("/wave-pool", async (req, res) => {
     // Rewrite absolute paths in HTML to route through /wave-pool/ prefix
     if (contentType.includes("text/html")) {
       let html = Buffer.from(body).toString("utf-8");
-      // Add base tag so relative paths resolve correctly
-      html = html.replace(/<head>/i, '<head><base href="/wave-pool/">');
+      // Add base tag for asset resolution + inject SPA router patch
+      // The SPA's client-side router sees /wave-pool/ and shows "Page Not Found"
+      // Inject a script that rewrites the perceived path to / before the SPA loads
+      const SPA_ROUTER_PATCH = '<head><base href="/wave-pool/">' +
+        '<script>' +
+        '(function(){' +
+        'var p=window.location.pathname;' +
+        'if(p.startsWith("/wave-pool")){' +
+        'var np=p.replace(/^\\/wave-pool/,"")||"/";' +
+        'try{history.replaceState(null,"",np+window.location.search+window.location.hash)}catch(e){}' +
+        '}' +
+        'var op=history.pushState,or=history.replaceState;' +
+        'history.pushState=function(s,t,u){if(u&&typeof u==="string"&&u.startsWith("/")&&!u.startsWith("/wave-pool")){u="/wave-pool"+u}return op.call(this,s,t,u)};' +
+        'history.replaceState=function(s,t,u){if(u&&typeof u==="string"&&u.startsWith("/")&&!u.startsWith("/wave-pool")){u="/wave-pool"+u}return or.call(this,s,t,u)};' +
+        '})();' +
+        '</scr' + 'ipt>';
+      html = html.replace(/<head>/i, SPA_ROUTER_PATCH);
       // Rewrite absolute paths in src, href attributes (skip protocol-relative and already-prefixed)
       html = html.replace(/(src|href|action)=(["'])(\/[^"']*["'])/gi, (match, attr, quote, path) => {
         if (path.startsWith("/wave-pool") || path.startsWith("//")) return match;
