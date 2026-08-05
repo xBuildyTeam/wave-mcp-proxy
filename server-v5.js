@@ -91,76 +91,104 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite, injectAuth }) {
 
     if (injectAuth && contentType.includes("text/html")) {
       let html = Buffer.from(body).toString("utf-8");
-      const AUTH_BRIDGE = '<script>' +
-        '(function(){' +
-        'var existingToken=localStorage.getItem("base44_access_token");' +
-        'var ssoVerified=localStorage.getItem("wave_sso_verified");' +
-        'var bridgeV=localStorage.getItem("wave_sso_v");' +
-        'if(bridgeV!=="2"){localStorage.removeItem("base44_access_token");localStorage.setItem("wave_sso_v","2");existingToken=null;}' +
-        'var u=new URLSearchParams(window.location.search);' +
-        'var urlToken=u.get("access_token");' +
-        'if(urlToken){try{localStorage.setItem("base44_access_token",urlToken);}catch(e){}u.delete("access_token");' +
-        'var nu=window.location.pathname+(u.toString()?"?"+u.toString():"")+window.location.hash;' +
-        'window.history.replaceState({},document.title,nu);existingToken=urlToken;}' +
-        'if(existingToken)return;' +
-        'if(!ssoVerified){' +
-        'window.parent.postMessage({type:"WAVE_POOL_READY"},"*");' +
-        'window.addEventListener("message",function(e){' +
-        'if(e.data&&e.data.type==="WAVE_OS_SESSION"){' +
-        'var p=e.data.payload||e.data;' +
-        'if(p.authToken&&p.authToken.indexOf(".")>-1){' +
-        'fetch("/api/functions/exchangeSession",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:p.authToken})})' +
-        '.then(function(r){return r.json();})' +
-        '.then(function(d){if(d.verified){localStorage.setItem("wave_sso_verified","true");localStorage.setItem("bridge_email",d.email||p.email||"");localStorage.setItem("bridge_name",d.fullName||"");}else if(p.email){localStorage.setItem("bridge_email",p.email);}window.location.reload();})' +
-        '.catch(function(){if(p.email){localStorage.setItem("bridge_email",p.email);}window.location.reload();});' +
-        '}else{' +
-        'if(p.authToken){try{localStorage.setItem("base44_access_token",p.authToken);}catch(err){}}' +
-        'if(p.access_token){try{localStorage.setItem("base44_access_token",p.access_token);}catch(err){}}' +
-        'if(p.userEmail||p.email){try{localStorage.setItem("bridge_email",p.userEmail||p.email);}catch(err){}}' +
-        'window.location.reload();}}' +
-        '});' +
-        '}' +
-        'console.log("[SSO] bridge loaded, existingToken:",!!existingToken,"ssoVerified:",!!ssoVerified,"bridgeV:",bridgeV);' +
-        'if(!ssoVerified){' +
-        'window.parent.postMessage({type:"WAVE_POOL_READY"},"*");' +
-        'console.log("[SSO] sent WAVE_POOL_READY to parent");' +
-        'window.addEventListener("message",function(e){' +
-        'if(e.data&&e.data.type==="WAVE_OS_SESSION"){' +
-        'var p=e.data.payload||e.data;' +
-        'console.log("[SSO] got WAVE_OS_SESSION, authToken length:",p.authToken?p.authToken.length:0,"email:",p.email||"none");' +
-        'if(p.authToken&&p.authToken.indexOf(".")>-1){' +
-        'console.log("[SSO] token has dot, calling exchangeSession");' +
-        'fetch("/api/functions/exchangeSession",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:p.authToken})})' +
-        '.then(function(r){return r.json();})' +
-        '.then(function(d){console.log("[SSO] exchangeSession response:",JSON.stringify(d));if(d.verified){localStorage.setItem("wave_sso_verified","true");localStorage.setItem("bridge_email",d.email||p.email||"");localStorage.setItem("bridge_name",d.fullName||"");}else if(p.email){localStorage.setItem("bridge_email",p.email);}window.location.reload();})' +
-        '.catch(function(err){console.error("[SSO] exchangeSession fetch error:",err);if(p.email){localStorage.setItem("bridge_email",p.email);}window.location.reload();});' +
-        '}else{' +
-        'console.log("[SSO] no dot in token, legacy path");' +
-        'if(p.authToken){try{localStorage.setItem("base44_access_token",p.authToken);}catch(err){}}' +
-        'if(p.access_token){try{localStorage.setItem("base44_access_token",p.access_token);}catch(err){}}' +
-        'if(p.userEmail||p.email){try{localStorage.setItem("bridge_email",p.userEmail||p.email);}catch(err){}}' +
-        'window.location.reload();}}' +
-        '});' +
-        '}' +
-        'var prefillTries=0;' +
-        'var prefillInterval=setInterval(function(){' +
-        'prefillTries++;' +
-        'var el=document.querySelector("input[type=email],input[name=email],input[placeholder*=email i]");' +
-        'if(el){' +
-        'clearInterval(prefillInterval);' +
-        'var em=localStorage.getItem("bridge_email");' +
-        'if(em){el.value=em;el.dispatchEvent(new Event("input",{bubbles:true}));console.log("[SSO] pre-filled email:",em);}' +
-        'var pw=document.querySelector("input[type=password],input[name=password]");' +
-        'if(pw){var pwTries=0;var checkPw=setInterval(function(){pwTries++;' +
-        'if(pw.value&&pw.value.length>0){clearInterval(checkPw);' +
-        'var btn=document.querySelector("button[type=submit],input[type=submit],button:not([type=button])");' +
-        'if(btn){btn.click();}else{var form=pw.closest("form");if(form){form.submit();}}' +
-        'console.log("[SSO] auto-submitted form after password detected");}' +
-        '}else if(pwTries>15){clearInterval(checkPw);pw.focus();console.log("[SSO] no saved password, focused field");}},200);}}' +
-        'else if(prefillTries>50){clearInterval(prefillInterval);console.log("[SSO] gave up waiting for email input after 10s");}' +
-        '},200);' +
-        '})();' +
-        '</scr' + 'ipt>';
+      const AUTH_BRIDGE_INNER = `
+(function(){
+  var existingToken = localStorage.getItem("base44_access_token");
+  var ssoVerified = localStorage.getItem("wave_sso_verified");
+  var bridgeV = localStorage.getItem("wave_sso_v");
+  if (bridgeV !== "2") {
+    localStorage.removeItem("base44_access_token");
+    localStorage.setItem("wave_sso_v", "2");
+    existingToken = null;
+  }
+  var u = new URLSearchParams(window.location.search);
+  var urlToken = u.get("access_token");
+  if (urlToken) {
+    try { localStorage.setItem("base44_access_token", urlToken); } catch(e) {}
+    u.delete("access_token");
+    var nu = window.location.pathname + (u.toString() ? "?" + u.toString() : "") + window.location.hash;
+    window.history.replaceState({}, document.title, nu);
+    existingToken = urlToken;
+  }
+  console.log("[SSO] bridge loaded, existingToken:", !!existingToken, "ssoVerified:", !!ssoVerified, "bridgeV:", bridgeV);
+  if (existingToken) return;
+
+  window.addEventListener("message", function(e){
+    if (!e.data || e.data.type !== "WAVE_OS_SESSION") return;
+    var p = e.data.payload || e.data;
+    console.log("[SSO] got WAVE_OS_SESSION, authToken length:", p.authToken ? p.authToken.length : 0, "email:", p.email || "none");
+    if (p.authToken && p.authToken.indexOf(".") > -1) {
+      console.log("[SSO] token has dot, calling exchangeSession");
+      fetch("/api/functions/exchangeSession", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({token: p.authToken})
+      }).then(function(r){ return r.json(); }).then(function(d){
+        console.log("[SSO] exchangeSession response:", JSON.stringify(d));
+        if (d.verified) {
+          localStorage.setItem("wave_sso_verified", "true");
+          localStorage.setItem("bridge_email", d.email || p.email || "");
+          localStorage.setItem("bridge_name", d.fullName || "");
+        } else if (p.email) {
+          localStorage.setItem("bridge_email", p.email);
+        }
+        window.location.reload();
+      }).catch(function(err){
+        console.error("[SSO] exchangeSession fetch error:", err);
+        if (p.email) localStorage.setItem("bridge_email", p.email);
+        window.location.reload();
+      });
+    } else {
+      console.log("[SSO] no dot in token, legacy path");
+      if (p.authToken) { try { localStorage.setItem("base44_access_token", p.authToken); } catch(err) {} }
+      if (p.access_token) { try { localStorage.setItem("base44_access_token", p.access_token); } catch(err) {} }
+      if (p.userEmail || p.email) { try { localStorage.setItem("bridge_email", p.userEmail || p.email); } catch(err) {} }
+      window.location.reload();
+    }
+  });
+
+  if (!ssoVerified) {
+    window.parent.postMessage({type:"WAVE_POOL_READY"}, "*");
+    console.log("[SSO] sent WAVE_POOL_READY to parent");
+  }
+
+  var prefillTries = 0;
+  var prefillInterval = setInterval(function(){
+    prefillTries++;
+    var el = document.querySelector("input[type=email],input[name=email],input[placeholder*=email i]");
+    if (el) {
+      clearInterval(prefillInterval);
+      var em = localStorage.getItem("bridge_email");
+      if (em) {
+        el.value = em;
+        el.dispatchEvent(new Event("input", {bubbles:true}));
+        console.log("[SSO] pre-filled email:", em);
+      }
+      var pw = document.querySelector("input[type=password],input[name=password]");
+      if (pw) {
+        var pwTries = 0;
+        var checkPw = setInterval(function(){
+          pwTries++;
+          if (pw.value && pw.value.length > 0) {
+            clearInterval(checkPw);
+            var btn = document.querySelector("button[type=submit],input[type=submit],button:not([type=button])");
+            if (btn) { btn.click(); } else { var form = pw.closest("form"); if (form) form.submit(); }
+            console.log("[SSO] auto-submitted form after password detected");
+          } else if (pwTries > 15) {
+            clearInterval(checkPw);
+            pw.focus();
+            console.log("[SSO] no saved password, focused field");
+          }
+        }, 200);
+      }
+    } else if (prefillTries > 50) {
+      clearInterval(prefillInterval);
+      console.log("[SSO] gave up waiting for email input after 10s");
+    }
+  }, 200);
+})();
+`;
+      const AUTH_BRIDGE = "<script>" + AUTH_BRIDGE_INNER + "</scr" + "ipt>";
       html = html.replace(/<head>/i, '<head>' + AUTH_BRIDGE);
       body = Buffer.from(html, "utf-8");
     }
