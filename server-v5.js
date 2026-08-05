@@ -94,7 +94,7 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite, injectAuth }) {
       const AUTH_BRIDGE_INNER = `
 (function(){
   var existingToken = localStorage.getItem("base44_access_token");
-  var ssoVerified = localStorage.getItem("wave_sso_verified");
+  var ssoVerified = localStorage.getItem("wave_sso_verified") === "true";
   var bridgeV = localStorage.getItem("wave_sso_v");
   if (bridgeV !== "2") {
     localStorage.removeItem("base44_access_token");
@@ -110,11 +110,24 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite, injectAuth }) {
     window.history.replaceState({}, document.title, nu);
     existingToken = urlToken;
   }
-  console.log("[SSO] bridge loaded, existingToken:", !!existingToken, "ssoVerified:", !!ssoVerified, "bridgeV:", bridgeV);
+  console.log("[SSO] bridge loaded, existingToken:", !!existingToken, "ssoVerified:", ssoVerified, "bridgeV:", bridgeV);
   if (existingToken) return;
+
+  // Guard: process at most ONE WAVE_OS_SESSION message per page load, and never
+  // re-verify once this page load already knows it's verified. Wave OS fires
+  // WAVE_OS_SESSION on every iframe "load" event (not just in reply to our
+  // WAVE_POOL_READY), so without this guard every reload we trigger causes
+  // another incoming session message -> another verify -> another reload,
+  // forever (the "blinking" loop).
+  var handledThisLoad = false;
+  var failCount = parseInt(sessionStorage.getItem("wave_sso_fail_count") || "0", 10);
 
   window.addEventListener("message", function(e){
     if (!e.data || e.data.type !== "WAVE_OS_SESSION") return;
+    if (ssoVerified) { console.log("[SSO] already verified, ignoring extra WAVE_OS_SESSION"); return; }
+    if (handledThisLoad) { console.log("[SSO] already handled a session this load, ignoring duplicate"); return; }
+    if (failCount >= 2) { console.log("[SSO] too many failed attempts, giving up on auto-verify"); return; }
+    handledThisLoad = true;
     var p = e.data.payload || e.data;
     console.log("[SSO] got WAVE_OS_SESSION, authToken length:", p.authToken ? p.authToken.length : 0, "email:", p.email || "none");
     if (p.authToken && p.authToken.indexOf(".") > -1) {
@@ -126,17 +139,20 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite, injectAuth }) {
       }).then(function(r){ return r.json(); }).then(function(d){
         console.log("[SSO] exchangeSession response:", JSON.stringify(d));
         if (d.verified) {
+          sessionStorage.removeItem("wave_sso_fail_count");
           localStorage.setItem("wave_sso_verified", "true");
           localStorage.setItem("bridge_email", d.email || p.email || "");
           localStorage.setItem("bridge_name", d.fullName || "");
-        } else if (p.email) {
-          localStorage.setItem("bridge_email", p.email);
+          window.location.reload();
+        } else {
+          sessionStorage.setItem("wave_sso_fail_count", String(failCount + 1));
+          if (p.email) localStorage.setItem("bridge_email", p.email);
+          console.log("[SSO] verification failed, not reloading further (fail count " + (failCount + 1) + ")");
         }
-        window.location.reload();
       }).catch(function(err){
         console.error("[SSO] exchangeSession fetch error:", err);
+        sessionStorage.setItem("wave_sso_fail_count", String(failCount + 1));
         if (p.email) localStorage.setItem("bridge_email", p.email);
-        window.location.reload();
       });
     } else {
       console.log("[SSO] no dot in token, legacy path");
@@ -147,7 +163,7 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite, injectAuth }) {
     }
   });
 
-  if (!ssoVerified) {
+  if (!ssoVerified && failCount < 2) {
     window.parent.postMessage({type:"WAVE_POOL_READY"}, "*");
     console.log("[SSO] sent WAVE_POOL_READY to parent");
   }
