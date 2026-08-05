@@ -22,8 +22,91 @@ import {
 const app = express();
 app.use(express.json());
 
+const WAVE_POOL_TARGET = "https://wave-pool.base44.app";
+const WAVE_POOL_HOST = "dependable-energy-production.up.railway.app";
+
+async function proxyToWavePool(req, res, { stripPrefix, rewrite }) {
+  const targetPath = stripPrefix
+    ? (req.originalUrl.replace(/^\/wave-pool/, "") || "/")
+    : req.originalUrl;
+  const targetUrl = WAVE_POOL_TARGET + targetPath;
+
+  try {
+    const headers = { ...req.headers };
+    headers.host = "wave-pool.base44.app";
+    headers.origin = WAVE_POOL_TARGET;
+    delete headers["x-forwarded-for"];
+    delete headers["x-forwarded-proto"];
+    delete headers["x-forwarded-host"];
+
+    const fetchOpts = { method: req.method, headers };
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      fetchOpts.body = JSON.stringify(req.body);
+    }
+
+    const response = await fetch(targetUrl, fetchOpts);
+
+    const responseHeaders = {};
+    response.headers.forEach((value, key) => {
+      if (!["x-frame-options", "content-security-policy", "content-security-policy-report-only", "content-encoding", "content-length", "transfer-encoding"].includes(key.toLowerCase())) {
+        responseHeaders[key] = value;
+      }
+    });
+
+    if (responseHeaders["set-cookie"]) {
+      const cookies = Array.isArray(responseHeaders["set-cookie"])
+        ? responseHeaders["set-cookie"]
+        : [responseHeaders["set-cookie"]];
+      responseHeaders["set-cookie"] = cookies.map(c =>
+        c.replace(/;\s*Domain=[^;]+/gi, "").replace(/;\s*SameSite=[^;]*/gi, "; SameSite=None; Secure")
+      );
+    }
+
+    res.status(response.status);
+    for (const [key, value] of Object.entries(responseHeaders)) {
+      res.setHeader(key, value);
+    }
+
+    const contentType = (responseHeaders["content-type"] || "").toLowerCase();
+    let body = await response.arrayBuffer();
+
+    if (rewrite && contentType.includes("text/html")) {
+      let html = Buffer.from(body).toString("utf-8");
+      html = html.replace(/<head>/i, '<head><base href="/wave-pool/">');
+      html = html.replace(/(src|href|action)=(["'])(\/[^"']*["'])/gi, (match, attr, quote, path) => {
+        if (path.startsWith("/wave-pool") || path.startsWith("//")) return match;
+        return `${attr}=${quote}/wave-pool${path}`;
+      });
+      html = html.replace(/fetch\((["'])(\/[^"']*)["']/gi, 'fetch($1/wave-pool$2"');
+      body = Buffer.from(html, "utf-8");
+    } else if (rewrite && (contentType.includes("javascript") || contentType.includes("css"))) {
+      let text = Buffer.from(body).toString("utf-8");
+      text = text.replace(/(["'])(\/assets\/[^"']*)["']/gi, '$1/wave-pool$2"');
+      text = text.replace(/(["'])(\/api\/[^"']*)["']/gi, '$1/wave-pool$2"');
+      text = text.replace(/url\((["']?)(\/[^"')]*["')]?\))/gi, 'url($1/wave-pool$2');
+      body = Buffer.from(text, "utf-8");
+    }
+
+    res.send(Buffer.from(body));
+  } catch (err) {
+    console.error("Wave Pool proxy error:", err.message);
+    res.status(502).send("Wave Pool proxy error: " + err.message);
+  }
+}
+
+// Host-based passthrough — MUST be registered before the path-based /wave-pool
+// mount below, and must check hostname on every request regardless of path.
+app.use((req, res, next) => {
+  const host = (req.headers.host || "").split(":")[0];
+  if (host === WAVE_POOL_HOST) {
+    return proxyToWavePool(req, res, { stripPrefix: false, rewrite: false });
+  }
+  next();
+});
+
+
 const PORT = process.env.PORT || 3000;
-const VERSION = "5.6.0";
+const VERSION = "5.6.1";
 
 // ── BACKEND URL ──
 const STALE_URL = "https://oswave.io/api/functions/mcpRouter";
@@ -692,88 +775,6 @@ app.get("/", (req, res) =>
 // 2. PATH-BASED (legacy /wave-pool mount): kept for backward compatibility,
 //    still does prefix stripping + HTML/asset rewriting.
 // Both strip X-Frame-Options / CSP so the app can be iframed.
-const WAVE_POOL_TARGET = "https://wave-pool.base44.app";
-const WAVE_POOL_HOST = "dependable-energy-production.up.railway.app";
-
-async function proxyToWavePool(req, res, { stripPrefix, rewrite }) {
-  const targetPath = stripPrefix
-    ? (req.originalUrl.replace(/^\/wave-pool/, "") || "/")
-    : req.originalUrl;
-  const targetUrl = WAVE_POOL_TARGET + targetPath;
-
-  try {
-    const headers = { ...req.headers };
-    headers.host = "wave-pool.base44.app";
-    headers.origin = WAVE_POOL_TARGET;
-    delete headers["x-forwarded-for"];
-    delete headers["x-forwarded-proto"];
-    delete headers["x-forwarded-host"];
-
-    const fetchOpts = { method: req.method, headers };
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      fetchOpts.body = JSON.stringify(req.body);
-    }
-
-    const response = await fetch(targetUrl, fetchOpts);
-
-    const responseHeaders = {};
-    response.headers.forEach((value, key) => {
-      if (!["x-frame-options", "content-security-policy", "content-security-policy-report-only", "content-encoding", "content-length", "transfer-encoding"].includes(key.toLowerCase())) {
-        responseHeaders[key] = value;
-      }
-    });
-
-    if (responseHeaders["set-cookie"]) {
-      const cookies = Array.isArray(responseHeaders["set-cookie"])
-        ? responseHeaders["set-cookie"]
-        : [responseHeaders["set-cookie"]];
-      responseHeaders["set-cookie"] = cookies.map(c =>
-        c.replace(/;\s*Domain=[^;]+/gi, "").replace(/;\s*SameSite=[^;]*/gi, "; SameSite=None; Secure")
-      );
-    }
-
-    res.status(response.status);
-    for (const [key, value] of Object.entries(responseHeaders)) {
-      res.setHeader(key, value);
-    }
-
-    const contentType = (responseHeaders["content-type"] || "").toLowerCase();
-    let body = await response.arrayBuffer();
-
-    if (rewrite && contentType.includes("text/html")) {
-      let html = Buffer.from(body).toString("utf-8");
-      html = html.replace(/<head>/i, '<head><base href="/wave-pool/">');
-      html = html.replace(/(src|href|action)=(["'])(\/[^"']*["'])/gi, (match, attr, quote, path) => {
-        if (path.startsWith("/wave-pool") || path.startsWith("//")) return match;
-        return `${attr}=${quote}/wave-pool${path}`;
-      });
-      html = html.replace(/fetch\((["'])(\/[^"']*)["']/gi, 'fetch($1/wave-pool$2"');
-      body = Buffer.from(html, "utf-8");
-    } else if (rewrite && (contentType.includes("javascript") || contentType.includes("css"))) {
-      let text = Buffer.from(body).toString("utf-8");
-      text = text.replace(/(["'])(\/assets\/[^"']*)["']/gi, '$1/wave-pool$2"');
-      text = text.replace(/(["'])(\/api\/[^"']*)["']/gi, '$1/wave-pool$2"');
-      text = text.replace(/url\((["']?)(\/[^"')]*["')]?\))/gi, 'url($1/wave-pool$2');
-      body = Buffer.from(text, "utf-8");
-    }
-
-    res.send(Buffer.from(body));
-  } catch (err) {
-    console.error("Wave Pool proxy error:", err.message);
-    res.status(502).send("Wave Pool proxy error: " + err.message);
-  }
-}
-
-// Host-based passthrough — MUST be registered before the path-based /wave-pool
-// mount below, and must check hostname on every request regardless of path.
-app.use((req, res, next) => {
-  const host = (req.headers.host || "").split(":")[0];
-  if (host === WAVE_POOL_HOST) {
-    return proxyToWavePool(req, res, { stripPrefix: false, rewrite: false });
-  }
-  next();
-});
-
 // Legacy path-based mount (kept for backward compatibility)
 app.use("/wave-pool", async (req, res) => {
   return proxyToWavePool(req, res, { stripPrefix: true, rewrite: true });
