@@ -91,32 +91,40 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite, injectAuth }) {
       let html = Buffer.from(body).toString("utf-8");
       const AUTH_BRIDGE = '<script>' +
         '(function(){' +
-        // Check if we already have a token — if so, skip the handshake entirely
         'var existingToken=localStorage.getItem("base44_access_token");' +
-        // URL param access_token (Base44 native) — store and clean URL
+        'var ssoVerified=localStorage.getItem("wave_sso_verified");' +
         'var u=new URLSearchParams(window.location.search);' +
         'var urlToken=u.get("access_token");' +
         'if(urlToken){try{localStorage.setItem("base44_access_token",urlToken);}catch(e){}u.delete("access_token");' +
         'var nu=window.location.pathname+(u.toString()?"?"+u.toString():"")+window.location.hash;' +
         'window.history.replaceState({},document.title,nu);existingToken=urlToken;}' +
-        // Only do the handshake if we DONT have a token yet
-        'if(!existingToken){' +
+        'if(existingToken)return;' +
+        'if(!ssoVerified){' +
         'window.parent.postMessage({type:"WAVE_POOL_READY"},"*");' +
         'window.addEventListener("message",function(e){' +
         'if(e.data&&e.data.type==="WAVE_OS_SESSION"){' +
         'var p=e.data.payload||e.data;' +
+        'if(p.authToken&&p.authToken.indexOf(".")>-1){' +
+        'fetch("/api/functions/exchangeSession",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:p.authToken})})' +
+        '.then(function(r){return r.json();})' +
+        '.then(function(d){if(d.verified){localStorage.setItem("wave_sso_verified","true");localStorage.setItem("bridge_email",d.email||p.email||"");localStorage.setItem("bridge_name",d.fullName||"");}else if(p.email){localStorage.setItem("bridge_email",p.email);}window.location.reload();})' +
+        '.catch(function(){if(p.email){localStorage.setItem("bridge_email",p.email);}window.location.reload();});' +
+        '}else{' +
         'if(p.authToken){try{localStorage.setItem("base44_access_token",p.authToken);}catch(err){}}' +
         'if(p.access_token){try{localStorage.setItem("base44_access_token",p.access_token);}catch(err){}}' +
         'if(p.userEmail||p.email){try{localStorage.setItem("bridge_email",p.userEmail||p.email);}catch(err){}}' +
-        'window.location.reload();' +
-        '}' +
+        'window.location.reload();}}' +
         '});' +
         '}' +
-        // Fallback: pre-fill email if login form is visible after 2s
         'setTimeout(function(){' +
         'var el=document.querySelector("input[type=email],input[name=email],input[placeholder*=email i]");' +
         'if(el){var em=localStorage.getItem("bridge_email");if(em){el.value=em;el.dispatchEvent(new Event("input",{bubbles:true}));}' +
-        'var pw=document.querySelector("input[type=password],input[name=password]");if(pw)pw.focus();}' +
+        'var pw=document.querySelector("input[type=password],input[name=password]");' +
+        'if(pw){var attempts=0;var checkPw=setInterval(function(){attempts++;' +
+        'if(pw.value&&pw.value.length>0){clearInterval(checkPw);' +
+        'var btn=document.querySelector("button[type=submit],input[type=submit],button:not([type=button])");' +
+        'if(btn){btn.click();}else{var form=pw.closest("form");if(form){form.submit();}}}' +
+        '}else if(attempts>15){clearInterval(checkPw);pw.focus();}},200);}}' +
         '},2000);' +
         '})();' +
         '</scr' + 'ipt>';
