@@ -95,6 +95,8 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite, injectAuth }) {
         '(function(){' +
         'var existingToken=localStorage.getItem("base44_access_token");' +
         'var ssoVerified=localStorage.getItem("wave_sso_verified");' +
+        'var bridgeV=localStorage.getItem("wave_sso_v");' +
+        'if(bridgeV!=="2"){localStorage.removeItem("base44_access_token");localStorage.setItem("wave_sso_v","2");existingToken=null;}' +
         'var u=new URLSearchParams(window.location.search);' +
         'var urlToken=u.get("access_token");' +
         'if(urlToken){try{localStorage.setItem("base44_access_token",urlToken);}catch(e){}u.delete("access_token");' +
