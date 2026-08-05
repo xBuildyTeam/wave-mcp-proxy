@@ -91,15 +91,23 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite, injectAuth }) {
       let html = Buffer.from(body).toString("utf-8");
       const AUTH_BRIDGE = '<script>' +
         '(function(){' +
+        // Phase 1: Try to use token from postMessage (works if cross-app auth is enabled)
         'window.addEventListener("message",function(e){' +
         'if(e.data&&e.data.type==="WAVE_OS_AUTH"&&e.data.token){' +
-        'try{localStorage.setItem("base44_access_token",e.data.token);' +
-        'if(e.data.appId)localStorage.setItem("base44_app_id",e.data.appId);' +
-        '}catch(err){}' +
+        'try{localStorage.setItem("base44_access_token",e.data.token);}catch(err){}' +
+        // Don't store appId — let Wave Pool use its own default
         'window.location.reload();' +
         '}' +
+        // Phase 2: If email is provided, pre-fill the login form
+        'if(e.data&&e.data.type==="WAVE_OS_AUTH"&&e.data.email&&!e.data.token){' +
+        'function fillEmail(){var el=document.querySelector("input[type=email],input[name=email],input[placeholder*=email i]");' +
+        'if(el){el.value=e.data.email;el.dispatchEvent(new Event("input",{bubbles:true}));' +
+        'var pw=document.querySelector("input[type=password],input[name=password]");' +
+        'if(pw)pw.focus();}else{setTimeout(fillEmail,200);}}' +
+        'fillEmail();' +
+        '}' +
         '});' +
-        '// Also check URL param for initial load' +
+        // Also check URL param for initial load
         'var p=new URLSearchParams(window.location.search);' +
         'var t=p.get("access_token");' +
         'if(t){' +
@@ -107,6 +115,15 @@ async function proxyToWavePool(req, res, { stripPrefix, rewrite, injectAuth }) {
         'p.delete("access_token");' +
         'var nu=window.location.pathname+(p.toString()?"?"+p.toString():"")+window.location.hash;' +
         'window.history.replaceState({},document.title,nu);' +
+        '}' +
+        // Pre-fill email from URL param as fallback
+        'var em=p.get("bridge_email");' +
+        'if(em){' +
+        'function fillEmailUrl(){var el=document.querySelector("input[type=email],input[name=email],input[placeholder*=email i]");' +
+        'if(el){el.value=em;el.dispatchEvent(new Event("input",{bubbles:true}));' +
+        'var pw=document.querySelector("input[type=password],input[name=password]");' +
+        'if(pw)pw.focus();}else{setTimeout(fillEmailUrl,200);}}' +
+        'fillEmailUrl();' +
         '}' +
         '})();' +
         '</scr' + 'ipt>';
@@ -133,7 +150,7 @@ app.use((req, res, next) => {
 
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "5.6.2";
+const VERSION = "5.6.3";
 
 // ── BACKEND URL ──
 const STALE_URL = "https://oswave.io/api/functions/mcpRouter";
