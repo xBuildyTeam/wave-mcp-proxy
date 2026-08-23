@@ -115,7 +115,7 @@ app.use((req, res, next) => {
 
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "5.7.0";
+const VERSION = "5.8.0";
 
 // ── BACKEND URL ──
 const STALE_URL = "https://oswave.io/api/functions/mcpRouter";
@@ -306,9 +306,34 @@ async function forwardToBackend(method, params, id, token) {
   console.log(`Backend ${method}: HTTP ${resp.status}`);
 
   if (resp.status === 401 || resp.status === 403) {
-    throw new Error(
+    // v5.8.0: the backend may answer 403 with a STRUCTURED JSON-RPC error — notably
+    // -32002 when a safe-scope token is refused a destructive tool. That is an
+    // AUTHORIZATION failure, not a bad credential. Reporting "token invalid or
+    // expired, regenerate" for those is actively harmful: it trains users to churn
+    // credentials that were never the problem, and a re-mint does not fix a scope
+    // denial. So propagate the backend's own code and message when it gives one.
+    const raw = await resp.text().catch(() => "");
+    let backendErr = null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.error && typeof parsed.error.code === "number") {
+        backendErr = parsed.error;
+      }
+    } catch (_) {
+      backendErr = null;
+    }
+    if (backendErr) {
+      const passthrough = new Error(String(backendErr.message || "Request refused by backend"));
+      passthrough.rpcCode = backendErr.code;
+      passthrough.httpStatus = resp.status;
+      throw passthrough;
+    }
+    const authErr = new Error(
       `Auth failed (HTTP ${resp.status}). Token invalid or expired. Regenerate at app.oswave.io → Settings → MCP Setup.`
     );
+    authErr.rpcCode = -32001;
+    authErr.httpStatus = resp.status;
+    throw authErr;
   }
 
   if (!resp.ok) {
@@ -525,7 +550,16 @@ app.post("/sse", async (req, res) => {
     if (method === "tools/list") {
       sendEvent({
         jsonrpc: "2.0", id,
-        error: { code: -32603, message: "Failed to list tools: " + err.message },
+        error: { code: err.rpcCode || -32603, message: "Failed to list tools: " + err.message },
+      });
+    } else if (err.rpcCode) {
+      // v5.8.0: a structured refusal (e.g. -32002 scope denial) must remain a
+      // JSON-RPC error. Wrapping it in a result{isError} hides an authorization
+      // failure inside a 200 — exactly the shape that reads as success to a
+      // client, or to a human skimming logs.
+      sendEvent({
+        jsonrpc: "2.0", id,
+        error: { code: err.rpcCode, message: err.message },
       });
     } else {
       sendEvent({
@@ -738,7 +772,7 @@ app.post("/mcp", async (req, res) => {
     res.json({ jsonrpc: "2.0", id, result });
   } catch (err) {
     console.error(`MCP error ${method}:`, err.message);
-    res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: err.message } });
+    res.status(err.httpStatus || 200).json({ jsonrpc: "2.0", id, error: { code: err.rpcCode || -32603, message: err.message } });
   }
 });
 
