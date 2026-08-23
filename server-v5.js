@@ -370,7 +370,9 @@ function createMcpServer(userToken) {
       const tools = await fetchUserTools(userToken);
       return { tools };
     }
-    return { tools: [] };
+    throw new Error(
+      "No valid MCP token. Generate one at app.oswave.io → Settings → MCP Setup."
+    );
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
