@@ -115,7 +115,7 @@ app.use((req, res, next) => {
 
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "5.6.5";
+const VERSION = "5.7.0";
 
 // ── BACKEND URL ──
 const STALE_URL = "https://oswave.io/api/functions/mcpRouter";
@@ -228,7 +228,10 @@ function extractRawToken(req) {
     return req.query.token;
   }
 
-  return ENV_TOKEN;
+  // v5.7.0: never fall back to ENV_TOKEN for an unauthenticated request.
+  // This endpoint is public; returning ENV_TOKEN here granted anonymous
+  // callers the env credential's full tool access.
+  return null;
 }
 
 function extractUserToken(req) {
@@ -363,9 +366,6 @@ function createMcpServer(userToken) {
   }));
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    if (cachedTools && !userToken) {
-      return { tools: cachedTools };
-    }
     if (userToken) {
       const tools = await fetchUserTools(userToken);
       return { tools };
