@@ -10,6 +10,7 @@
  */
 
 import express from "express";
+import { mountThetaRelay } from "./theta-relay.js";
 import crypto from "crypto";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -21,6 +22,9 @@ import {
 
 const app = express();
 app.use(express.json());
+
+// Read-only Theta RPC relay (needs THETA_RELAY_KEY on the service)
+mountThetaRelay(app);
 
 const WAVE_POOL_TARGET = "https://wave-pool.base44.app";
 const WAVE_POOL_HOST = "dependable-energy-production.up.railway.app";
@@ -115,7 +119,7 @@ app.use((req, res, next) => {
 
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "5.8.0";
+const VERSION = "5.9.0";
 
 // ── BACKEND URL ──
 const STALE_URL = "https://oswave.io/api/functions/mcpRouter";
@@ -807,6 +811,7 @@ app.get("/", (req, res) =>
     sessions: Object.keys(transports).length,
     diagnostic: "/diagnose?token=YOUR_TOKEN — test full auth chain",
     wavePoolProxy: "/wave-pool — iframe-safe proxy for wave-pool.base44.app",
+    thetaRelay: "/theta-rpc (POST, X-Wave-Relay-Key) · /theta-rpc/health",
   })
 );
 
